@@ -1,6 +1,7 @@
 ﻿import { expect } from "chai";
 import {
   DEFAULT_CHAPTER_FALLBACKS,
+  DEFAULT_SUMMARY_PROMPT,
   DEFAULT_TABLE_TEMPLATE,
   buildUserMessage,
   generateChapterPrompts,
@@ -13,6 +14,7 @@ import {
   parseManualChapterStructure,
   parseMultiRoundPromptTemplateExport,
   serializeMultiRoundPromptTemplate,
+  shouldUpdatePrompt,
   type MultiRoundPromptTemplate,
 } from "../src/utils/prompts";
 import {
@@ -396,11 +398,21 @@ describe("multi-round prompt templates v2", function () {
       }
     });
 
-    it("uses an English language instruction when building English requests", function () {
-      const message = buildUserMessage("Explain the paper.", "Paper body");
+    it("does not override the selected prompt language by default", function () {
+      const message = buildUserMessage("请用中文总结这篇论文。", "Paper body");
 
-      expect(message).to.include("Please answer in English.");
-      expect(message).to.not.include("请用中文回答");
+      expect(message).to.include("请用中文总结这篇论文。");
+      expect(message).to.not.include("Please answer in English.");
+      expect(message).to.not.include("请用中文回答。");
+    });
+
+    it("preserves custom summary prompts even without a stored version", function () {
+      expect(
+        shouldUpdatePrompt(undefined, "请用中文总结并输出要点。"),
+      ).to.equal(false);
+      expect(shouldUpdatePrompt(undefined, DEFAULT_SUMMARY_PROMPT)).to.equal(
+        true,
+      );
     });
 
     it("treats saved Chinese table defaults as defaults in English locale", function () {

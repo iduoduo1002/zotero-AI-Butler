@@ -80,6 +80,7 @@ export const DEFAULT_SUMMARY_PROMPT_EN = `Explain this paper in English in as mu
 
 const LEGACY_DEFAULT_SUMMARY_PROMPTS = [
   `帮我用中文讲一下这篇论文，讲的越详细越好，我有这个领域的通用基础，但是没有这个小方向的基础。输出的时候只包含关于论文的讲解，不要包含寒暄的内容。开始时先用一段话总结这篇论文的核心内容。如果有公式，应该用$内联公式$和$$行间公式$$格式。`,
+  `# 角色\n您好，我是您的AI管家。我将为您 meticulously 地阅读这篇论文，并为您整理一份详尽的笔记。\n\n# 任务\n请为我分析下方提供的学术论文，并生成一份包含以下三个部分的综合性总结：\n\n### 第一部分：核心摘要\n请用一个段落高度概括论文的核心内容，包括研究问题、方法、关键发现和主要结论，让我能迅速掌握论文的精髓。\n\n### 第二部分：章节详解\n请识别并划分论文的主要章节（如引言、方法、结果、讨论等），并为每个章节提供一个清晰的标题和详细的内容总结。\n\n### 第三部分：创新与局限\n请根据论文内容，分析并总结其主要创新点和存在的局限性，并指出未来可能的研究方向。\n\n# 输出要求\n- 结构清晰，逻辑严谨。\n- 语言精炼，准确传达。\n- 请使用中文进行回答。`,
 ];
 
 /**
@@ -101,12 +102,6 @@ const LEGACY_DEFAULT_SUMMARY_PROMPTS = [
 export const SYSTEM_ROLE_PROMPT =
   "You are a helpful academic assistant. 如果有公式，应该用$内联公式$和$行间公式$格式。";
 
-function getDefaultAnswerLanguageInstruction(): string {
-  return shouldUseEnglishDefaultPrompts()
-    ? "Please answer in English."
-    : "请用中文回答。";
-}
-
 /**
  * 构建完整的用户消息
  *
@@ -114,8 +109,7 @@ function getDefaultAnswerLanguageInstruction(): string {
  *
  * 消息结构:
  * 1. 用户提示词:定义任务和输出要求
- * 2. 语言要求:明确使用中文回答(可配置)
- * 3. 论文全文:包裹在 XML 标签中,清晰标识内容边界
+ * 2. 论文全文:包裹在 XML 标签中,清晰标识内容边界
  *
  * 技术细节:
  * - 使用 <Paper> XML 标签包裹论文内容
@@ -137,7 +131,11 @@ function getDefaultAnswerLanguageInstruction(): string {
  * ```
  */
 export function buildUserMessage(prompt: string, text: string): string {
-  return `${prompt}\n\n${getDefaultAnswerLanguageInstruction()}\n\n<Paper>\n${text}\n</Paper>`;
+  return `${prompt}
+
+<Paper>
+${text}
+</Paper>`;
 }
 
 /**
@@ -198,20 +196,20 @@ export function shouldUpdatePrompt(
   currentPromptVersion?: number,
   currentPrompt?: string,
 ): boolean {
-  // 情况1:没有版本号记录,强制更新为默认提示词
-  // 这通常发生在首次安装或从旧版本升级时
-  if (currentPromptVersion === undefined) {
-    return true;
+  const normalizedPrompt = currentPrompt?.trim();
+  const isDefaultLikePrompt =
+    !normalizedPrompt ||
+    normalizedPrompt === DEFAULT_SUMMARY_PROMPT ||
+    normalizedPrompt === DEFAULT_SUMMARY_PROMPT_EN ||
+    LEGACY_DEFAULT_SUMMARY_PROMPTS.includes(normalizedPrompt);
+
+  if (!isDefaultLikePrompt) {
+    return false;
   }
 
-  // 情况2:版本号低于当前版本,且仍在使用内置默认提示词,需要升级
-  if (
-    currentPrompt !== undefined &&
-    currentPrompt !== DEFAULT_SUMMARY_PROMPT &&
-    currentPrompt !== DEFAULT_SUMMARY_PROMPT_EN &&
-    !LEGACY_DEFAULT_SUMMARY_PROMPTS.includes(currentPrompt)
-  ) {
-    return false;
+  // 没有版本号的首次安装或旧默认提示词，需要迁移到当前本地化默认值。
+  if (currentPromptVersion === undefined) {
+    return true;
   }
 
   return currentPromptVersion < PROMPT_VERSION;

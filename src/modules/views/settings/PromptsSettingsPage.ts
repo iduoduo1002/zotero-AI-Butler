@@ -49,6 +49,7 @@ export class PromptsSettingsPage {
 
   // UI refs
   private presetSelect!: HTMLElement; // 自定义下拉框
+  private btnSaveCurrentTemplate!: HTMLButtonElement;
   private editor!: HTMLTextAreaElement;
   private previewBox!: HTMLElement;
   private sampleTitle!: HTMLInputElement;
@@ -98,7 +99,10 @@ export class PromptsSettingsPage {
     // 内容包装器 - 限制最大宽度，防止内容撑开容器
     const contentWrapper = Zotero.getMainWindow().document.createElement("div");
     Object.assign(contentWrapper.style, {
-      maxWidth: "680px",
+      maxWidth:
+        this.pageKind === "summary" || this.pageKind === "all"
+          ? "980px"
+          : "680px",
       width: "100%",
     });
     this.container.appendChild(contentWrapper);
@@ -191,14 +195,21 @@ export class PromptsSettingsPage {
     layout.id = "single-round-settings";
     Object.assign(layout.style, {
       display: "grid",
-      gridTemplateColumns: "minmax(280px, 340px) 1fr",
-      gap: "20px",
+      gridTemplateColumns: "minmax(280px, 320px) minmax(360px, 1fr)",
+      gap: "18px",
       alignItems: "start",
     });
     summarySection.appendChild(layout);
 
     // 左侧: 模板选择与示例变量
     const left = Zotero.getMainWindow().document.createElement("div");
+    left.appendChild(
+      this.createSummaryPanelHeading(
+        getString("settings-prompts-template-library-title"),
+        getString("settings-prompts-template-library-subtitle"),
+      ),
+    );
+    Object.assign(left.style, this.getSummaryPanelStyle());
     layout.appendChild(left);
 
     // 预设选择
@@ -226,51 +237,46 @@ export class PromptsSettingsPage {
       ),
     );
 
-    // 预设按钮 - 竖向布局，避免文字溢出
+    // 预设管理：切换即应用，按钮只保留管理动作，避免 Apply/Save 的双重语义。
     const presetBtnCol = Zotero.getMainWindow().document.createElement("div");
     Object.assign(presetBtnCol.style, {
-      display: "flex",
-      flexDirection: "column",
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
       gap: "10px",
       marginBottom: "16px",
     });
 
-    const btnApplyPreset = createStyledButton(
-      getString("settings-prompts-apply-preset"),
-      "#2196f3",
+    const btnNewPreset = createStyledButton(
+      getString("settings-prompts-new-preset"),
+      "#2e7d32",
     );
-    Object.assign(btnApplyPreset.style, {
-      width: "100%",
-      padding: "12px 20px",
-      fontSize: "14px",
-    });
-    btnApplyPreset.addEventListener("click", () => this.loadPresetToEditor());
-
-    const btnSaveAsPreset = createStyledButton(
-      getString("settings-prompts-save-as-preset"),
-      "#4caf50",
-    );
-    Object.assign(btnSaveAsPreset.style, {
-      width: "100%",
-      padding: "12px 20px",
-      fontSize: "14px",
-    });
-    btnSaveAsPreset.addEventListener("click", () => this.saveAsPreset());
-
     const btnDeletePreset = createStyledButton(
       getString("settings-prompts-delete-preset"),
       "#f44336",
     );
-    Object.assign(btnDeletePreset.style, {
-      width: "100%",
-      padding: "12px 20px",
-      fontSize: "14px",
-    });
-    btnDeletePreset.addEventListener("click", () => this.deleteCustomPreset());
+    const btnRestoreBuiltins = createStyledButton(
+      getString("settings-prompts-restore-builtins"),
+      "#607d8b",
+    );
+    Object.assign(btnRestoreBuiltins.style, { gridColumn: "1 / -1" });
 
-    presetBtnCol.appendChild(btnApplyPreset);
-    presetBtnCol.appendChild(btnSaveAsPreset);
+    [btnNewPreset, btnDeletePreset, btnRestoreBuiltins].forEach((button) => {
+      Object.assign(button.style, {
+        width: "100%",
+        padding: "11px 14px",
+        fontSize: "13px",
+        borderRadius: "10px",
+      });
+    });
+    btnNewPreset.addEventListener("click", () => this.createSummaryPreset());
+    btnDeletePreset.addEventListener("click", () => this.deleteCustomPreset());
+    btnRestoreBuiltins.addEventListener("click", () =>
+      this.restoreBuiltinSummaryPresets(),
+    );
+
+    presetBtnCol.appendChild(btnNewPreset);
     presetBtnCol.appendChild(btnDeletePreset);
+    presetBtnCol.appendChild(btnRestoreBuiltins);
     left.appendChild(presetBtnCol);
 
     // 示例变量输入
@@ -316,6 +322,13 @@ export class PromptsSettingsPage {
 
     // 右侧: 编辑器 + 操作 + 预览
     const right = Zotero.getMainWindow().document.createElement("div");
+    right.appendChild(
+      this.createSummaryPanelHeading(
+        getString("settings-prompts-editor-panel-title"),
+        getString("settings-prompts-editor-panel-subtitle"),
+      ),
+    );
+    Object.assign(right.style, this.getSummaryPanelStyle());
     layout.appendChild(right);
 
     this.editor = createTextarea(
@@ -336,27 +349,24 @@ export class PromptsSettingsPage {
     const actionRow = Zotero.getMainWindow().document.createElement("div");
     Object.assign(actionRow.style, {
       display: "flex",
-      gap: "12px",
+      gap: "10px",
       marginTop: "8px",
       marginBottom: "16px",
+      flexWrap: "wrap",
     });
-    const btnSave = createStyledButton(
-      getString("settings-prompts-save"),
+    this.btnSaveCurrentTemplate = createStyledButton(
+      getString("settings-prompts-save-current-template"),
       "#4caf50",
+    ) as HTMLButtonElement;
+    this.btnSaveCurrentTemplate.addEventListener("click", () =>
+      this.saveCurrent(),
     );
-    btnSave.addEventListener("click", () => this.saveCurrent());
-    const btnReset = createStyledButton(
-      getString("settings-prompts-restore"),
-      "#9e9e9e",
-    );
-    btnReset.addEventListener("click", () => this.resetDefault());
     const btnPreview = createStyledButton(
       getString("settings-prompts-preview"),
       "#2196f3",
     );
     btnPreview.addEventListener("click", () => this.updatePreview());
-    actionRow.appendChild(btnSave);
-    actionRow.appendChild(btnReset);
+    actionRow.appendChild(this.btnSaveCurrentTemplate);
     actionRow.appendChild(btnPreview);
     right.appendChild(actionRow);
 
@@ -384,6 +394,7 @@ export class PromptsSettingsPage {
     // Render preview only on the AI summary prompt page
     if (this.shouldRender("summary")) {
       this.updatePreview();
+      this.updateSummarySaveButtonState();
     }
 
     if (this.pageKind === "all") {
@@ -397,8 +408,54 @@ export class PromptsSettingsPage {
   }
 
   // ===== helpers =====
-  private getAllPresets(): PresetMap {
-    const builtins: PresetMap = {
+  private getSummaryPanelStyle(): Partial<CSSStyleDeclaration> {
+    return {
+      padding: "16px",
+      borderRadius: "16px",
+      border: "1px solid var(--ai-border, rgba(89, 192, 188, 0.22))",
+      background:
+        "linear-gradient(180deg, var(--ai-surface, #ffffff), var(--ai-bg, #f7f9fb))",
+      boxShadow: "0 10px 30px rgba(15, 23, 42, 0.06)",
+      boxSizing: "border-box",
+    };
+  }
+
+  private createSummaryPanelHeading(
+    titleText: string,
+    subtitleText: string,
+  ): HTMLElement {
+    const doc = Zotero.getMainWindow().document;
+    const wrapper = doc.createElement("div");
+    Object.assign(wrapper.style, {
+      marginBottom: "14px",
+      paddingBottom: "12px",
+      borderBottom: "1px solid var(--ai-border, rgba(0,0,0,0.08))",
+    });
+
+    const title = doc.createElement("div");
+    title.textContent = titleText;
+    Object.assign(title.style, {
+      fontWeight: "700",
+      fontSize: "14px",
+      color: "var(--ai-text, #1f2937)",
+      marginBottom: "4px",
+    });
+
+    const subtitle = doc.createElement("div");
+    subtitle.textContent = subtitleText;
+    Object.assign(subtitle.style, {
+      fontSize: "12px",
+      lineHeight: "1.5",
+      color: "var(--ai-text-muted, #6b7280)",
+    });
+
+    wrapper.appendChild(title);
+    wrapper.appendChild(subtitle);
+    return wrapper;
+  }
+
+  private getBuiltinSummaryPresets(): PresetMap {
+    return {
       [getString("settings-prompts-builtin-default")]:
         getDefaultSummaryPrompt(),
       [getString("settings-prompts-builtin-concise")]:
@@ -408,14 +465,14 @@ export class PromptsSettingsPage {
       [getString("settings-prompts-builtin-computer")]:
         `帮我用中文讲一下这篇计算机领域的论文，讲的越详细越好，我有通用计算机专业基础，但是没有这个小方向的基础。输出的时候只包含关于论文的讲解，不要包含寒暄的内容。开始时先用一段话总结这篇论文的核心内容。`,
     };
+  }
 
-    // 自定义预设
+  private getCustomSummaryPresets(): PresetMap {
     const custom: PresetMap = {};
     try {
       const raw = (getPref("customPrompts") as string) || "";
       if (raw && raw.trim()) {
         const parsed = JSON.parse(raw);
-        // 过滤掉空值，防止 null/undefined
         Object.entries(parsed).forEach(([k, v]) => {
           if (v && typeof v === "string") {
             custom[k] = v;
@@ -425,17 +482,58 @@ export class PromptsSettingsPage {
     } catch (e) {
       ztoolkit.log("[PromptsSettings] Failed to parse customPrompts:", e);
     }
+    return custom;
+  }
 
-    return { ...builtins, ...custom };
+  private setCustomSummaryPresets(custom: PresetMap): void {
+    setPref("customPrompts", JSON.stringify(custom));
+  }
+
+  private getAllPresets(): PresetMap {
+    return {
+      ...this.getBuiltinSummaryPresets(),
+      ...this.getCustomSummaryPresets(),
+    };
+  }
+
+  private getDefaultSummaryPresetName(): string {
+    return getString("settings-prompts-builtin-default");
+  }
+
+  private isDefaultSummaryPresetName(name: string): boolean {
+    return name === this.getDefaultSummaryPresetName();
   }
 
   private detectPresetName(current: string, presets: PresetMap): string {
     // 防止 null/undefined 值导致错误
-    if (!current) return getString("settings-prompts-builtin-default");
+    if (!current) return this.getDefaultSummaryPresetName();
     const entry = Object.entries(presets).find(([, v]) => {
       return v && typeof v === "string" && v.trim() === current.trim();
     });
-    return entry ? entry[0] : getString("settings-prompts-builtin-default");
+    return entry ? entry[0] : this.getDefaultSummaryPresetName();
+  }
+
+  private updateSummarySaveButtonState(): void {
+    if (!this.btnSaveCurrentTemplate || !this.presetSelect) return;
+    const name = (this.presetSelect as any).getValue() || "";
+    const isDefault = this.isDefaultSummaryPresetName(name);
+    this.btnSaveCurrentTemplate.disabled = isDefault;
+    this.btnSaveCurrentTemplate.title = isDefault
+      ? getString("settings-prompts-default-readonly-help")
+      : "";
+    this.btnSaveCurrentTemplate.style.opacity = isDefault ? "0.55" : "1";
+    this.btnSaveCurrentTemplate.style.cursor = isDefault
+      ? "not-allowed"
+      : "pointer";
+  }
+
+  private showPromptToast(
+    text: string,
+    type: "success" | "fail" | "default" = "success",
+  ): void {
+    new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
+      .createLine({ text, type })
+      .show();
   }
 
   private loadPresetToEditor(): void {
@@ -444,201 +542,213 @@ export class PromptsSettingsPage {
     const tpl = presets[name];
     if (tpl && typeof tpl === "string") {
       this.editor.value = tpl;
-      setPref("summaryPrompt", tpl); // 保存到配置，确保立即生效
-      new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-        .createLine({
-          text: getString("settings-prompts-preset-applied", {
-            args: { name },
-          }),
-          type: "success",
-        })
-        .show();
+      setPref("summaryPrompt", tpl); // 切换即应用，确保生成总结时立即使用当前模板
+      setPref("promptVersion" as any, PROMPT_VERSION as any);
       this.updatePreview();
+      this.updateSummarySaveButtonState();
+      this.showPromptToast(
+        getString("settings-prompts-preset-applied", { args: { name } }),
+        "success",
+      );
     } else {
-      new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-        .createLine({
-          text: getString("settings-prompts-preset-empty"),
-          type: "fail",
-        })
-        .show();
+      this.showPromptToast(getString("settings-prompts-preset-empty"), "fail");
     }
   }
 
-  private saveAsPreset(): void {
-    const win = Zotero.getMainWindow() as any;
-    const name = { value: "" } as any;
-    const ok = Services.prompt.prompt(
-      win,
-      getString("settings-prompts-save-as-dialog-title"),
-      getString("settings-prompts-save-as-dialog-message"),
-      name,
-      "",
-      { value: false },
+  private createSummaryPreset(): void {
+    const { body, actions, close } = this.createPageDialog(
+      getString("settings-prompts-new-preset-dialog-title"),
     );
-    if (!ok || !name.value || !name.value.trim()) return;
+    const nameInput = createInput(
+      "summary-preset-name",
+      "text",
+      "",
+      getString("settings-prompts-preset-name-placeholder"),
+    );
+    body.appendChild(
+      createFormGroup(
+        getString("settings-prompts-preset-name-label"),
+        nameInput,
+        getString("settings-prompts-new-preset-help"),
+      ),
+    );
 
-    const presetName = name.value.trim();
-    const editorValue = this.editor.value || "";
+    const btnCancel = createStyledButton(
+      getString("settings-prompts-cancel"),
+      "#9e9e9e",
+      "small",
+    );
+    btnCancel.addEventListener("click", close);
 
-    if (!editorValue.trim()) {
-      new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-        .createLine({
-          text: getString("settings-prompts-template-empty"),
-          type: "fail",
-        })
-        .show();
-      return;
-    }
-
-    const custom: PresetMap = {};
-    try {
-      const raw = (getPref("customPrompts") as string) || "";
-      if (raw && raw.trim()) {
-        const parsed = JSON.parse(raw);
-        // 过滤空值
-        Object.entries(parsed).forEach(([k, v]) => {
-          if (v && typeof v === "string") custom[k] = v;
-        });
+    const btnConfirm = createStyledButton(
+      getString("settings-prompts-new-preset"),
+      "#4caf50",
+      "small",
+    );
+    btnConfirm.addEventListener("click", () => {
+      const presetName = nameInput.value.trim();
+      if (!presetName) {
+        this.showPromptToast(
+          getString("settings-prompts-preset-name-required"),
+          "fail",
+        );
+        return;
       }
-    } catch (e) {
-      ztoolkit.log("[PromptsSettings] Failed to parse customPrompts:", e);
-    }
+      const allPresets = this.getAllPresets();
+      if (presetName in allPresets) {
+        this.showPromptToast(
+          getString("settings-prompts-preset-name-exists", {
+            args: { name: presetName },
+          }),
+          "fail",
+        );
+        return;
+      }
 
-    custom[presetName] = editorValue;
-    setPref("customPrompts", JSON.stringify(custom));
+      const editorValue = this.editor.value || "";
+      if (!editorValue.trim()) {
+        this.showPromptToast(
+          getString("settings-prompts-template-empty"),
+          "fail",
+        );
+        return;
+      }
 
-    // 重新渲染整个页面来更新下拉框选项
-    this.render();
-
-    // 设置下拉框为新保存的预设
-    setTimeout(() => {
-      (this.presetSelect as any).setValue(presetName);
-    }, 0);
-
-    new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-      .createLine({
-        text: getString("settings-prompts-preset-saved", {
+      const custom = this.getCustomSummaryPresets();
+      custom[presetName] = editorValue;
+      this.setCustomSummaryPresets(custom);
+      setPref("summaryPrompt", editorValue);
+      setPref("promptVersion" as any, PROMPT_VERSION as any);
+      close();
+      this.render();
+      this.showPromptToast(
+        getString("settings-prompts-preset-saved", {
           args: { name: presetName },
         }),
-        type: "success",
-      })
-      .show();
+        "success",
+      );
+    });
+
+    actions.appendChild(btnCancel);
+    actions.appendChild(btnConfirm);
+    setTimeout(() => nameInput.focus(), 0);
   }
 
   private deleteCustomPreset(): void {
     const name = (this.presetSelect as any).getValue();
-    // 只允许删除自定义的(避免删内置)
-    const custom: PresetMap = {};
-    try {
-      const raw = (getPref("customPrompts") as string) || "";
-      if (raw && raw.trim()) {
-        const parsed = JSON.parse(raw);
-        Object.entries(parsed).forEach(([k, v]) => {
-          if (v && typeof v === "string") custom[k] = v;
-        });
-      }
-    } catch (e) {
-      ztoolkit.log("[PromptsSettings] Failed to parse customPrompts:", e);
-    }
-
-    if (!(name in custom)) {
-      new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-        .createLine({
-          text: getString("settings-prompts-delete-custom-only"),
-          type: "default",
-        })
-        .show();
+    if (this.isDefaultSummaryPresetName(name)) {
+      this.showPromptToast(
+        getString("settings-prompts-cannot-delete-default"),
+        "default",
+      );
       return;
     }
-    const ok = Services.prompt.confirm(
-      Zotero.getMainWindow() as any,
-      getString("settings-prompts-delete-dialog-title"),
-      getString("settings-prompts-delete-dialog-message", { args: { name } }),
-    );
-    if (!ok) return;
-    delete custom[name];
-    setPref("customPrompts", JSON.stringify(custom));
 
-    // 重新渲染整个页面来更新下拉框选项（与 saveAsPreset 一致）
-    this.render();
-
-    // 设置下拉框为默认模板
-    setTimeout(() => {
-      (this.presetSelect as any).setValue(
-        getString("settings-prompts-builtin-default"),
+    const custom = this.getCustomSummaryPresets();
+    if (!(name in custom)) {
+      this.showPromptToast(
+        getString("settings-prompts-delete-custom-only"),
+        "default",
       );
-    }, 0);
+      return;
+    }
 
-    new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-      .createLine({
-        text: getString("settings-prompts-preset-deleted", { args: { name } }),
-        type: "success",
-      })
-      .show();
+    this.showInlineConfirm({
+      title: getString("settings-prompts-delete-dialog-title"),
+      message: getString("settings-prompts-delete-dialog-message", {
+        args: { name },
+      }),
+      confirmText: getString("settings-prompts-delete-preset"),
+      confirmColor: "#e53935",
+      onConfirm: () => {
+        const builtin = this.getBuiltinSummaryPresets();
+        delete custom[name];
+        this.setCustomSummaryPresets(custom);
+
+        const nextPrompt = builtin[name] || getDefaultSummaryPrompt();
+        setPref("summaryPrompt", nextPrompt);
+        setPref("promptVersion" as any, PROMPT_VERSION as any);
+        this.render();
+        this.showPromptToast(
+          getString("settings-prompts-preset-deleted", { args: { name } }),
+          "success",
+        );
+      },
+    });
   }
 
   private saveCurrent(): void {
-    const text = this.editor.value || getDefaultSummaryPrompt();
-    setPref("summaryPrompt", text);
-
-    // 获取当前选中的预设名
+    const text = this.editor.value || "";
     const currentPresetName = (this.presetSelect as any).getValue();
 
-    // 检查是否是自定义预设，如果是则同时更新
-    const custom: PresetMap = {};
-    try {
-      const raw = (getPref("customPrompts") as string) || "";
-      if (raw && raw.trim()) {
-        const parsed = JSON.parse(raw);
-        Object.entries(parsed).forEach(([k, v]) => {
-          if (v && typeof v === "string") custom[k] = v;
-        });
-      }
-    } catch (e) {
-      ztoolkit.log("[PromptsSettings] Failed to parse customPrompts:", e);
+    if (this.isDefaultSummaryPresetName(currentPresetName)) {
+      this.showPromptToast(
+        getString("settings-prompts-default-readonly"),
+        "default",
+      );
+      return;
+    }
+    if (!text.trim()) {
+      this.showPromptToast(
+        getString("settings-prompts-template-empty"),
+        "fail",
+      );
+      return;
     }
 
-    if (currentPresetName in custom) {
-      // 更新自定义预设
-      custom[currentPresetName] = text;
-      setPref("customPrompts", JSON.stringify(custom));
-      new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-        .createLine({
-          text: getString("settings-prompts-preset-updated", {
-            args: { name: currentPresetName },
-          }),
-          type: "success",
-        })
-        .show();
-    } else {
-      // 内置预设，仅保存到 summaryPrompt
-      new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-        .createLine({
-          text: getString("settings-prompts-current-saved"),
-          type: "success",
-        })
-        .show();
-    }
+    const custom = this.getCustomSummaryPresets();
+    custom[currentPresetName] = text;
+    this.setCustomSummaryPresets(custom);
+    setPref("summaryPrompt", text);
+    setPref("promptVersion" as any, PROMPT_VERSION as any);
+    this.updatePreview();
+    this.showPromptToast(
+      getString("settings-prompts-preset-updated", {
+        args: { name: currentPresetName },
+      }),
+      "success",
+    );
   }
 
-  private resetDefault(): void {
-    const ok = Services.prompt.confirm(
-      Zotero.getMainWindow() as any,
-      getString("settings-prompts-reset-dialog-title"),
-      getString("settings-prompts-reset-dialog-message"),
+  private restoreBuiltinSummaryPresets(): void {
+    const builtins = this.getBuiltinSummaryPresets();
+    const custom = this.getCustomSummaryPresets();
+    const modifiedBuiltinNames = Object.keys(builtins).filter(
+      (name) => name in custom,
     );
-    if (!ok) return;
-    const def = getDefaultSummaryPrompt();
-    setPref("summaryPrompt", def);
-    setPref("promptVersion" as any, PROMPT_VERSION as any);
-    this.editor.value = def;
-    this.updatePreview();
-    new ztoolkit.ProgressWindow(getString("settings-prompts-progress-title"))
-      .createLine({
-        text: getString("settings-prompts-reset-done"),
-        type: "success",
-      })
-      .show();
+
+    if (modifiedBuiltinNames.length === 0) {
+      this.showPromptToast(
+        getString("settings-prompts-restore-builtins-noop"),
+        "default",
+      );
+      return;
+    }
+
+    const list = modifiedBuiltinNames.map((name) => `• ${name}`).join("\n");
+    this.showInlineConfirm({
+      title: getString("settings-prompts-restore-builtins-dialog-title"),
+      message: getString("settings-prompts-restore-builtins-dialog-message", {
+        args: { names: list },
+      }),
+      confirmText: getString("settings-prompts-restore-builtins"),
+      confirmColor: "#9e9e9e",
+      onConfirm: () => {
+        modifiedBuiltinNames.forEach((name) => delete custom[name]);
+        this.setCustomSummaryPresets(custom);
+
+        const currentName = (this.presetSelect as any).getValue();
+        if (currentName in builtins) {
+          setPref("summaryPrompt", builtins[currentName]);
+        }
+        setPref("promptVersion" as any, PROMPT_VERSION as any);
+        this.render();
+        this.showPromptToast(
+          getString("settings-prompts-restore-builtins-done"),
+          "success",
+        );
+      },
+    });
   }
 
   private updatePreview(): void {
@@ -2467,6 +2577,7 @@ export class PromptsSettingsPage {
       lineHeight: "1.6",
       color: "var(--ai-text-muted, #4b5563)",
       wordBreak: "break-word",
+      whiteSpace: "pre-wrap",
     });
     body.appendChild(message);
 
