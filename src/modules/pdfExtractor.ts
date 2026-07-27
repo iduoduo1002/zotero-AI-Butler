@@ -91,6 +91,129 @@ export class PDFExtractor {
 
   private static readonly TEXT_EXTRACTION_TIMEOUT_MS = 30000;
   private static readonly TEXT_EXTRACTION_POLL_INTERVAL_MS = 1000;
+  private static readonly pdfDownloadLocks = new Map<
+    number,
+    Promise<string | false>
+  >();
+
+  /**
+   * 确保 Zotero stored PDF 附件已经存在于本地。
+   *
+   * Zotero 文件同步可能只同步了附件元数据，PDF 二进制文件尚未下载。
+   * 此方法在用户启用自动下载时调用 Zotero 的按需下载接口，并在下载后
+   * 重新读取本地路径，供文本提取、Base64 上传和多 PDF 流程复用。
+   */
+  public static async ensurePdfAttachmentAvailable(
+    pdfAttachment: Zotero.Item,
+    options?: {
+      progressCallback?: PdfExtractionProgressCallback;
+      progressBase?: number;
+      progressTarget?: number;
+    },
+  ): Promise<string | false> {
+    const existingPath = await pdfAttachment.getFilePathAsync();
+    if (existingPath && (await this.pathExists(existingPath))) {
+      return existingPath;
+    }
+
+    const autoDownloadMissingPdf =
+      ((getPref("autoDownloadMissingPdf" as any) as boolean | undefined) ??
+        true) === true;
+    if (!autoDownloadMissingPdf) {
+      return false;
+    }
+
+    if (!(pdfAttachment as any).isStoredFileAttachment?.()) {
+      ztoolkit.log(
+        `[PDFExtractor] PDF attachment is missing locally but is not stored in Zotero storage: ${pdfAttachment.id}`,
+      );
+      return false;
+    }
+
+    const existingLock = this.pdfDownloadLocks.get(pdfAttachment.id);
+    if (existingLock) {
+      return existingLock;
+    }
+
+    const downloadPromise = this.downloadMissingPdfAttachment(
+      pdfAttachment,
+      options,
+    ).finally(() => {
+      this.pdfDownloadLocks.delete(pdfAttachment.id);
+    });
+    this.pdfDownloadLocks.set(pdfAttachment.id, downloadPromise);
+    return downloadPromise;
+  }
+
+  private static async downloadMissingPdfAttachment(
+    pdfAttachment: Zotero.Item,
+    options?: {
+      progressCallback?: PdfExtractionProgressCallback;
+      progressBase?: number;
+      progressTarget?: number;
+    },
+  ): Promise<string | false> {
+    const syncRunner = (Zotero as any).Sync?.Runner;
+    if (typeof syncRunner?.downloadFile !== "function") {
+      ztoolkit.log(
+        "[PDFExtractor] Zotero.Sync.Runner.downloadFile is unavailable",
+      );
+      return false;
+    }
+
+    const title = String(pdfAttachment.getField("title") || "PDF");
+    options?.progressCallback?.(
+      getString("progress-pdf-downloading-message"),
+      options.progressBase ?? 15,
+      {
+        stage: "pdf-extracting",
+        label: getString("progress-pdf-downloading"),
+        detail: getString("progress-pdf-downloading-detail", {
+          args: { title },
+        }),
+      },
+    );
+
+    try {
+      ztoolkit.log(
+        `[PDFExtractor] Downloading missing Zotero PDF attachment: ${pdfAttachment.id}`,
+      );
+      await syncRunner.downloadFile(pdfAttachment);
+    } catch (error) {
+      ztoolkit.log("[PDFExtractor] Zotero PDF download failed:", error);
+      return false;
+    }
+
+    const downloadedPath = await pdfAttachment.getFilePathAsync();
+    if (downloadedPath && (await this.pathExists(downloadedPath))) {
+      options?.progressCallback?.(
+        getString("progress-pdf-downloaded-message"),
+        options.progressTarget ?? 20,
+        {
+          stage: "pdf-extracting",
+          label: getString("progress-pdf-downloaded"),
+          detail: getString("progress-pdf-downloaded-detail", {
+            args: { title },
+          }),
+        },
+      );
+      return downloadedPath;
+    }
+
+    ztoolkit.log(
+      `[PDFExtractor] Zotero PDF download finished but local file is still unavailable: ${pdfAttachment.id}`,
+    );
+    return false;
+  }
+
+  private static async pathExists(path: string): Promise<boolean> {
+    try {
+      return await IOUtils.exists(path);
+    } catch (error) {
+      ztoolkit.log(`[PDFExtractor] 检查文件路径失败: ${path}`, error);
+      return false;
+    }
+  }
 
   /**
    * 检查条目是否有可用的 PDF 附件
@@ -318,7 +441,7 @@ export class PDFExtractor {
         args: { title: pdfAttachment.getField("title") || "PDF" },
       }),
     });
-    const text = await this.extractTextFromPDF(pdfAttachment);
+    const text = await this.extractTextFromPDF(pdfAttachment, progressCallback);
 
     // 第四步:验证文本有效性
     if (!text || text.trim().length === 0) {
@@ -358,13 +481,18 @@ export class PDFExtractor {
    */
   private static async extractTextFromPDF(
     pdfAttachment: Zotero.Item,
+    progressCallback?: PdfExtractionProgressCallback,
   ): Promise<string> {
     const startedAtMs = Date.now();
     const diagnostics = this.createTextExtractionDiagnostics(pdfAttachment);
 
     try {
-      // 获取 PDF 文件的本地路径
-      const path = await pdfAttachment.getFilePathAsync();
+      // 获取 PDF 文件的本地路径；必要时先从 Zotero 云端按需下载
+      const path = await this.ensurePdfAttachmentAvailable(pdfAttachment, {
+        progressCallback,
+        progressBase: 12,
+        progressTarget: 18,
+      });
       diagnostics.filePath = path || undefined;
       if (!path) {
         throw new Error(getString("pdf-error-file-path-not-found"));
@@ -969,8 +1097,12 @@ export class PDFExtractor {
       `[AI Butler] Selected oldest PDF (Base64): ${pdfAttachment.getField("title")} (Added: ${pdfAttachment.dateAdded})`,
     );
 
-    // 第三步: 获取 PDF 文件路径
-    const pdfPath = await pdfAttachment.getFilePathAsync();
+    // 第三步: 获取 PDF 文件路径；必要时先从 Zotero 云端按需下载
+    const pdfPath = await this.ensurePdfAttachmentAvailable(pdfAttachment, {
+      progressCallback,
+      progressBase: 18,
+      progressTarget: 25,
+    });
     if (!pdfPath) {
       throw new Error(getString("pdf-error-get-file-path-failed"));
     }
@@ -1026,7 +1158,7 @@ export class PDFExtractor {
       throw new Error(getString("pdf-error-attachment-not-pdf"));
     }
 
-    const pdfPath = await pdfAttachment.getFilePathAsync();
+    const pdfPath = await this.ensurePdfAttachmentAvailable(pdfAttachment);
     if (!pdfPath) {
       throw new Error(getString("pdf-error-get-file-path-failed"));
     }

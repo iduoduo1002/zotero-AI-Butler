@@ -92,6 +92,7 @@ pref("__prefsPrefix__.autoScanDeepReadEnabled", false);
 pref("__prefsPrefix__.scanInterval", "300");
 pref("__prefsPrefix__.pdfProcessMode", "base64"); // "text"、"base64" 或 "mineru"
 pref("__prefsPrefix__.pdfAttachmentMode", "default"); // "default" 或 "all"
+pref("__prefsPrefix__.autoDownloadMissingPdf", true); // 缺失本地 PDF 时自动从 Zotero 云端下载
 
 // ==================== 一图总结配置 ====================
 pref("__prefsPrefix__.imageSummaryCustomHeaders", ""); // 额外请求 Headers，JSON/Python dict 对象字符串

@@ -70,6 +70,7 @@ declare namespace _ZoteroTypes {
       "scanInterval": string;
       "pdfProcessMode": string;
       "pdfAttachmentMode": string;
+      "autoDownloadMissingPdf": boolean;
       "imageSummaryCustomHeaders": string;
       "imageSummaryRequestTimeoutSeconds": string;
       "imageSummaryAspectRatioEnabled": boolean;

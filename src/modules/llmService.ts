@@ -1208,13 +1208,18 @@ export class LLMService {
           );
         }
         const files = await Promise.all(
-          selected.map(async (pdf, index) => ({
-            filePath: (await pdf.getFilePathAsync()) || "",
-            displayName:
-              String(pdf.getField("title") || "").trim() ||
-              "PDF-" + (index + 1),
-            base64Content: await PDFExtractor.extractBase64FromAttachment(pdf),
-          })),
+          selected.map(async (pdf, index) => {
+            const filePath =
+              await PDFExtractor.ensurePdfAttachmentAvailable(pdf);
+            return {
+              filePath: filePath || "",
+              displayName:
+                String(pdf.getField("title") || "").trim() ||
+                "PDF-" + (index + 1),
+              base64Content:
+                await PDFExtractor.extractBase64FromAttachment(pdf),
+            };
+          }),
         );
         return { mode: "multi-file", files, warnings };
       }
