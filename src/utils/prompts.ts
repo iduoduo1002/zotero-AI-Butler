@@ -1,5 +1,6 @@
 import deepReadPromptDefaults from "../defaults/prompts/deep-read.json";
 import { getString } from "./locale";
+import { getPref } from "./prefs";
 
 /**
  * ================================================================
@@ -70,8 +71,97 @@ export const PROMPT_VERSION = 3;
  *
  * @const {string} DEFAULT_SUMMARY_PROMPT 默认提示词文本
  */
+export type DefaultPromptLanguage = "auto" | "zh-CN" | "en-US";
+export type ResolvedDefaultPromptLanguage = "zh-CN" | "en-US";
+
+function normalizeDefaultPromptLanguage(
+  value: unknown,
+): DefaultPromptLanguage | undefined {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "auto" || normalized === "system") return "auto";
+  if (
+    normalized === "zh" ||
+    normalized === "zh-cn" ||
+    normalized === "chinese"
+  ) {
+    return "zh-CN";
+  }
+  if (
+    normalized === "en" ||
+    normalized === "en-us" ||
+    normalized === "english"
+  ) {
+    return "en-US";
+  }
+  return undefined;
+}
+
+export function getDefaultPromptLanguagePreference(): DefaultPromptLanguage {
+  try {
+    return (
+      normalizeDefaultPromptLanguage(getPref("promptLanguage" as any)) || "auto"
+    );
+  } catch {
+    return "auto";
+  }
+}
+
+function getCurrentLocaleTag(): string {
+  try {
+    const zoteroLocale = (globalThis as any).Zotero?.locale;
+    if (zoteroLocale) return String(zoteroLocale);
+  } catch {
+    // Ignore and try other Zotero/Firefox locale APIs.
+  }
+
+  try {
+    const servicesLocale = (globalThis as any).Services?.locale;
+    const appLocale =
+      servicesLocale?.appLocaleAsBCP47 ||
+      servicesLocale?.requestedLocale ||
+      servicesLocale?.getAppLocaleAsBCP47?.();
+    if (appLocale) return String(appLocale);
+  } catch {
+    // Ignore and fall back below.
+  }
+
+  try {
+    const intlLocale = (globalThis as any).Services?.prefs?.getStringPref?.(
+      "intl.locale.requested",
+      "",
+    );
+    if (intlLocale) return String(intlLocale).split(",")[0];
+  } catch {
+    // Ignore and fall back below.
+  }
+
+  // Last fallback: infer from the already-loaded UI translation. This keeps
+  // existing tests and older Zotero builds working when no locale API is
+  // available in the current context.
+  try {
+    return getString("settings-image-summary-default-language") === "English"
+      ? "en-US"
+      : "zh-CN";
+  } catch {
+    return "zh-CN";
+  }
+}
+
+export function getResolvedDefaultPromptLanguage(): ResolvedDefaultPromptLanguage {
+  const preference = getDefaultPromptLanguagePreference();
+  if (preference === "zh-CN" || preference === "en-US") {
+    return preference;
+  }
+  return getCurrentLocaleTag().toLowerCase().startsWith("zh")
+    ? "zh-CN"
+    : "en-US";
+}
+
 function shouldUseEnglishDefaultPrompts(): boolean {
-  return getString("settings-image-summary-default-language") === "English";
+  return getResolvedDefaultPromptLanguage() === "en-US";
 }
 
 export const DEFAULT_SUMMARY_PROMPT = `帮我用中文讲一下这篇论文，讲的越详细越好，我有这个领域的通用基础，但是没有这个小方向的基础。输出的时候只包含关于论文的讲解，不要包含寒暄的内容。开始时先用一段话总结这篇论文的核心内容。`;
@@ -162,6 +252,22 @@ export function getDefaultSummaryPrompt(): string {
     : DEFAULT_SUMMARY_PROMPT;
 }
 
+export function isKnownDefaultSummaryPrompt(value?: string): boolean {
+  return isKnownDefaultPrompt(value, [
+    DEFAULT_SUMMARY_PROMPT,
+    DEFAULT_SUMMARY_PROMPT_EN,
+    ...LEGACY_DEFAULT_SUMMARY_PROMPTS,
+  ]);
+}
+
+export function getConfiguredSummaryPrompt(value?: string): string {
+  return resolveConfiguredDefaultPrompt(value, getDefaultSummaryPrompt(), [
+    DEFAULT_SUMMARY_PROMPT,
+    DEFAULT_SUMMARY_PROMPT_EN,
+    ...LEGACY_DEFAULT_SUMMARY_PROMPTS,
+  ]);
+}
+
 /**
  * 检查是否需要更新用户的提示词
  *
@@ -207,12 +313,21 @@ export function shouldUpdatePrompt(
     return false;
   }
 
-  // 没有版本号的首次安装或旧默认提示词，需要迁移到当前本地化默认值。
-  if (currentPromptVersion === undefined) {
+  // 没有版本号、版本过时，或默认提示词语言改变时迁移到当前默认值。
+  if (
+    currentPromptVersion === undefined ||
+    currentPromptVersion < PROMPT_VERSION
+  ) {
     return true;
   }
 
-  return currentPromptVersion < PROMPT_VERSION;
+  // If the user kept a built-in default prompt, allow the active default
+  // prompt language (auto / zh-CN / en-US) to refresh it even when the
+  // template version itself did not change.
+  return (
+    normalizePromptForDefaultComparison(normalizedPrompt || "") !==
+    normalizePromptForDefaultComparison(getDefaultSummaryPrompt())
+  );
 }
 
 // ================================================================

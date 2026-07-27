@@ -2,11 +2,15 @@
 import {
   DEFAULT_CHAPTER_FALLBACKS,
   DEFAULT_SUMMARY_PROMPT,
+  DEFAULT_SUMMARY_PROMPT_EN,
   DEFAULT_TABLE_TEMPLATE,
   buildUserMessage,
   generateChapterPrompts,
+  getConfiguredSummaryPrompt,
   getConfiguredTableTemplate,
   getDefaultMultiRoundPromptTemplate,
+  getDefaultSummaryPrompt,
+  getResolvedDefaultPromptLanguage,
   getBuiltinMultiRoundPromptTemplates,
   mergeMultiRoundPromptTemplates,
   parseChapterStructure,
@@ -368,13 +372,26 @@ describe("multi-round prompt templates v2", function () {
   describe("localized prompt defaults", function () {
     let previousAddon: any;
     let previousLocale: any;
+    let previousZotero: any;
 
     beforeEach(function () {
       previousAddon = (globalThis as any).addon;
       previousLocale = previousAddon?.data?.locale;
+      previousZotero = (globalThis as any).Zotero;
       const addon = previousAddon || { data: {} };
       addon.data = addon.data || {};
       (globalThis as any).addon = addon;
+      (globalThis as any).Zotero = {
+        ...(previousZotero || {}),
+        locale: "en-US",
+        Prefs: {
+          ...(previousZotero?.Prefs || {}),
+          get(key: string, ...args: unknown[]) {
+            if (key.endsWith(".promptLanguage")) return undefined;
+            return previousZotero?.Prefs?.get?.(key, ...args);
+          },
+        },
+      };
       addon.data.locale = {
         current: {
           formatMessagesSync(requests: Array<{ id: string }>) {
@@ -395,6 +412,11 @@ describe("multi-round prompt templates v2", function () {
         previousAddon.data.locale = previousLocale;
       } else {
         delete (globalThis as any).addon;
+      }
+      if (previousZotero === undefined) {
+        delete (globalThis as any).Zotero;
+      } else {
+        (globalThis as any).Zotero = previousZotero;
       }
     });
 
@@ -420,6 +442,22 @@ describe("multi-round prompt templates v2", function () {
 
       expect(table).to.include("| Dimension | Content |");
       expect(table).to.not.include("| 维度 | 内容 |");
+    });
+
+    it("allows overriding default prompt language to Chinese in an English UI", function () {
+      (globalThis as any).Zotero = {
+        Prefs: {
+          get(key: string) {
+            return key.endsWith(".promptLanguage") ? "zh-CN" : undefined;
+          },
+        },
+      };
+
+      expect(getResolvedDefaultPromptLanguage()).to.equal("zh-CN");
+      expect(getDefaultSummaryPrompt()).to.equal(DEFAULT_SUMMARY_PROMPT);
+      expect(getConfiguredSummaryPrompt(DEFAULT_SUMMARY_PROMPT_EN)).to.equal(
+        DEFAULT_SUMMARY_PROMPT,
+      );
     });
 
     it("does not include Chinese title placeholders in the English chapter prompt", function () {

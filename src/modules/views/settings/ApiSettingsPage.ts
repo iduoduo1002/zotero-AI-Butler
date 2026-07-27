@@ -1172,6 +1172,17 @@ export class ApiSettingsPage {
       ),
     );
 
+    const autoDownloadMissingPdf =
+      ((getPref("autoDownloadMissingPdf" as any) as boolean | undefined) ??
+        true) === true;
+    form.appendChild(
+      this.createFormGroup(
+        getString("settings-api-auto-download-missing-pdf-label"),
+        this.createCheckbox("autoDownloadMissingPdf", autoDownloadMissingPdf),
+        getString("settings-api-auto-download-missing-pdf-help"),
+      ),
+    );
+
     this.bindAutoSave(form);
 
     const buttonGroup = this.createElement("div", {
@@ -2663,6 +2674,10 @@ export class ApiSettingsPage {
         selectValue("pdfAttachmentMode", "default"),
       );
       setPref(
+        "autoDownloadMissingPdf" as any,
+        checkboxValue("autoDownloadMissingPdf", true),
+      );
+      setPref(
         "mineruModelVersion",
         selectValue("mineruModelVersion", "vlm") === "pipeline"
           ? "pipeline"
@@ -3064,6 +3079,15 @@ export class ApiSettingsPage {
         setPref(
           "pdfAttachmentMode" as any,
           (pdfAttachmentModeEl as any).getValue() || "default",
+        );
+      }
+      const autoDownloadMissingPdfEl = this.container.querySelector(
+        "#setting-autoDownloadMissingPdf",
+      ) as HTMLInputElement | null;
+      if (autoDownloadMissingPdfEl) {
+        setPref(
+          "autoDownloadMissingPdf" as any,
+          autoDownloadMissingPdfEl.checked,
         );
       }
       const mineruModelVersionEl = this.container.querySelector(
@@ -3534,6 +3558,7 @@ export class ApiSettingsPage {
     setPref("enablePdfSizeLimit" as any, false);
     setPref("maxPdfSizeMB" as any, "50");
     setPref("pdfAttachmentMode" as any, "default");
+    setPref("autoDownloadMissingPdf" as any, true);
 
     this.render();
 

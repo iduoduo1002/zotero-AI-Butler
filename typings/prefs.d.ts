@@ -51,6 +51,7 @@ declare namespace _ZoteroTypes {
       "mineruSyncExternal": boolean;
       "mineruExternalPath": string;
       "mineruFileNameMode": string;
+      "promptLanguage": string;
       "summaryPrompt": string;
       "customPrompts": string;
       "summaryMode": string;
@@ -69,6 +70,7 @@ declare namespace _ZoteroTypes {
       "scanInterval": string;
       "pdfProcessMode": string;
       "pdfAttachmentMode": string;
+      "autoDownloadMissingPdf": boolean;
       "imageSummaryCustomHeaders": string;
       "imageSummaryRequestTimeoutSeconds": string;
       "imageSummaryAspectRatioEnabled": boolean;

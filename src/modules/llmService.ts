@@ -9,7 +9,7 @@
  */
 import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
-import { getDefaultSummaryPrompt } from "../utils/prompts";
+import { getConfiguredSummaryPrompt } from "../utils/prompts";
 import { ApiKeyManager, type ProviderId } from "./apiKeyManager";
 import {
   LLMEndpointManager,
@@ -1208,13 +1208,18 @@ export class LLMService {
           );
         }
         const files = await Promise.all(
-          selected.map(async (pdf, index) => ({
-            filePath: (await pdf.getFilePathAsync()) || "",
-            displayName:
-              String(pdf.getField("title") || "").trim() ||
-              "PDF-" + (index + 1),
-            base64Content: await PDFExtractor.extractBase64FromAttachment(pdf),
-          })),
+          selected.map(async (pdf, index) => {
+            const filePath =
+              await PDFExtractor.ensurePdfAttachmentAvailable(pdf);
+            return {
+              filePath: filePath || "",
+              displayName:
+                String(pdf.getField("title") || "").trim() ||
+                "PDF-" + (index + 1),
+              base64Content:
+                await PDFExtractor.extractBase64FromAttachment(pdf),
+            };
+          }),
         );
         return { mode: "multi-file", files, warnings };
       }
@@ -1442,7 +1447,7 @@ export class LLMService {
 
   private static getDefaultPrompt(): string {
     const saved = (getPref("summaryPrompt") as string) || "";
-    return saved.trim() ? saved : getDefaultSummaryPrompt();
+    return getConfiguredSummaryPrompt(saved);
   }
 
   private static notifyError(message: string): void {

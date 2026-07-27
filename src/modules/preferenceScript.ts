@@ -226,6 +226,7 @@ function initializeDefaultPrefs() {
     temperature: "0.7",
     reasoningEffort: "default",
     stream: true,
+    promptLanguage: "auto",
     summaryPrompt: getDefaultSummaryPrompt(),
     promptVersion: PROMPT_VERSION,
     // 文献综述表格填写相关
