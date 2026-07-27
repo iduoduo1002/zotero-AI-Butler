@@ -168,7 +168,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
   // 注册右键上下文菜单
   // 为用户提供快速访问插件功能的入口
-  registerContextMenuItem();
+  registerContextMenuItem(win);
   bindUICustomizationRefreshEvent(win);
 
   // 注册文献库工具栏按钮
@@ -380,16 +380,116 @@ const CONTEXT_MENU_ROOT_DOM_IDS: Record<ContextMenuScope, string> = {
   collection: "zotero-collectionmenu-ai-butler-root",
 };
 
-function unregisterContextMenuItems(menu: {
-  unregister?: (menuId: string) => void;
-}): void {
-  if (typeof menu.unregister !== "function") return;
+const CONTEXT_MENU_POPUP_IDS: Record<ContextMenuScope, string[]> = {
+  item: ["zotero-itemmenu"],
+  collection: ["zotero-collectionmenu"],
+};
+
+function getContextMenuPopup(
+  doc: Document,
+  scope: ContextMenuScope,
+): XUL.MenuPopup | null {
+  for (const id of CONTEXT_MENU_POPUP_IDS[scope]) {
+    const popup = doc.getElementById(id) as XUL.MenuPopup | null;
+    if (popup) return popup;
+  }
+  return null;
+}
+
+function unregisterContextMenuItems(doc: Document): void {
   for (const menuId of Object.values(CONTEXT_MENU_ROOT_DOM_IDS)) {
-    menu.unregister(menuId);
+    doc.getElementById(menuId)?.remove();
   }
   for (const item of CONTEXT_MENU_ITEMS) {
-    menu.unregister(CONTEXT_MENU_DOM_IDS[item.id]);
+    doc.getElementById(CONTEXT_MENU_DOM_IDS[item.id])?.remove();
   }
+}
+
+function setContextMenuElementVisibility(
+  element: Element,
+  visible: boolean,
+): void {
+  if (visible) {
+    element.removeAttribute("hidden");
+  } else {
+    element.setAttribute("hidden", "true");
+  }
+}
+
+function bindContextMenuVisibilityUpdater(popup: Element): void {
+  const flagKey = "__aiButlerContextMenuVisibilityBound";
+  if ((popup as any)[flagKey]) return;
+  (popup as any)[flagKey] = true;
+
+  popup.addEventListener("popupshowing", (event: Event) => {
+    const root = event.currentTarget as Element;
+    const candidates = Array.from(
+      root.querySelectorAll("[data-ai-butler-context-menu='true']"),
+    ) as Element[];
+    for (const element of candidates) {
+      const getVisibility = (element as any).__aiButlerGetVisibility as
+        | ((element: Element, event: Event) => boolean | Promise<boolean>)
+        | undefined;
+      if (!getVisibility) continue;
+      void Promise.resolve(getVisibility(element, event)).then(
+        (visible) =>
+          setContextMenuElementVisibility(element, visible !== false),
+        (error) => {
+          ztoolkit.log("[AI-Butler] 更新右键菜单可见性失败:", error);
+          setContextMenuElementVisibility(element, false);
+        },
+      );
+    }
+  });
+}
+
+function createContextMenuElement(doc: Document, options: any): XULElement {
+  const tag = options.tag === "menu" ? "menu" : "menuitem";
+  const element = doc.createXULElement(tag) as XULElement;
+  element.setAttribute("id", options.id);
+  element.setAttribute("label", options.label);
+  element.setAttribute("data-ai-butler-context-menu", "true");
+
+  if (options.icon) {
+    element.setAttribute("image", options.icon);
+    element.setAttribute(
+      "class",
+      tag === "menu" ? "menu-iconic" : "menuitem-iconic",
+    );
+  }
+
+  if (typeof options.commandListener === "function") {
+    element.addEventListener("command", options.commandListener);
+  }
+
+  if (typeof options.getVisibility === "function") {
+    (element as any).__aiButlerGetVisibility = options.getVisibility;
+  }
+
+  if (tag === "menu") {
+    const popup = doc.createXULElement("menupopup") as XUL.MenuPopup;
+    bindContextMenuVisibilityUpdater(popup);
+    for (const child of options.children || []) {
+      popup.appendChild(createContextMenuElement(doc, child));
+    }
+    element.appendChild(popup);
+  }
+
+  return element;
+}
+
+function registerContextMenuElement(
+  doc: Document,
+  scope: ContextMenuScope,
+  options: any,
+): void {
+  const popup = getContextMenuPopup(doc, scope);
+  if (!popup) {
+    ztoolkit.log(`[AI-Butler] 找不到 ${scope} 右键菜单容器`);
+    return;
+  }
+  bindContextMenuVisibilityUpdater(popup);
+  popup.appendChild(createContextMenuElement(doc, options));
 }
 
 async function isContextMenuOptionVisible(
@@ -1044,19 +1144,17 @@ async function maybeOpenTaskPanelAfterQueue(): Promise<void> {
  * - 视觉样式:显示插件图标和国际化文本
  *
  * 技术实现:
- * - 使用 ztoolkit.Menu API 注册菜单项
+ * - 使用 Zotero/XUL 原生菜单注册菜单项
  * - getVisibility 动态控制菜单项的显示状态
  * - commandListener 处理用户点击事件
  */
-function registerContextMenuItem() {
+function registerContextMenuItem(win?: Window) {
   // 获取插件图标路径,用于菜单项显示
   const menuIcon = `chrome://${config.addonRef}/content/icons/favicon.png`;
-  const menu = (ztoolkit as any).Menu as {
-    register: (scope: ContextMenuScope, options: any) => void;
-    unregister?: (menuId: string) => void;
-  };
-
-  unregisterContextMenuItems(menu);
+  const targetWindows = win ? [win] : Zotero.getMainWindows();
+  for (const targetWin of targetWindows) {
+    unregisterContextMenuItems(targetWin.document);
+  }
 
   const isRegularItemSelection = () => {
     const selectedItems =
@@ -1212,25 +1310,33 @@ function registerContextMenuItem() {
         .map((definition) => definition.options);
       if (!children.length) continue;
 
-      menu.register(scope, {
-        tag: "menu",
-        id: CONTEXT_MENU_ROOT_DOM_IDS[scope],
-        label: getString("menu-root-ai-butler"),
-        icon: menuIcon,
-        children,
-        getVisibility: async (_elem: XUL.Menu, ev: Event) => {
-          for (const child of children) {
-            if (await isContextMenuOptionVisible(child, ev)) return true;
-          }
-          return false;
-        },
-      });
+      for (const targetWin of targetWindows) {
+        registerContextMenuElement(targetWin.document, scope, {
+          tag: "menu",
+          id: CONTEXT_MENU_ROOT_DOM_IDS[scope],
+          label: getString("menu-root-ai-butler"),
+          icon: menuIcon,
+          children,
+          getVisibility: async (_elem: XUL.Menu, ev: Event) => {
+            for (const child of children) {
+              if (await isContextMenuOptionVisible(child, ev)) return true;
+            }
+            return false;
+          },
+        });
+      }
     }
     return;
   }
 
   for (const definition of orderedDefinitions) {
-    menu.register(definition.scope, definition.options);
+    for (const targetWin of targetWindows) {
+      registerContextMenuElement(
+        targetWin.document,
+        definition.scope,
+        definition.options,
+      );
+    }
   }
 }
 
