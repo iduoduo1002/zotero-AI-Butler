@@ -27,7 +27,7 @@ import { BaseView } from "./BaseView";
 import { MainWindow } from "./MainWindow";
 import { marked } from "marked";
 import { getPref } from "../../utils/prefs";
-import { getDefaultSummaryPrompt } from "../../utils/prompts";
+import { getConfiguredSummaryPrompt } from "../../utils/prompts";
 import { getString } from "../../utils/locale";
 import { createStyledButton } from "./ui/components";
 import {
@@ -1172,8 +1172,9 @@ export class SummaryView extends BaseView {
     // 如果提供了AI总结内容,将其作为第一轮对话
     if (aiSummary && aiSummary.trim()) {
       // 获取用户的提示词
-      const summaryPrompt =
-        (getPref("summaryPrompt") as string) || getDefaultSummaryPrompt();
+      const summaryPrompt = getConfiguredSummaryPrompt(
+        getPref("summaryPrompt") as string,
+      );
 
       this.conversationHistory.push({
         role: "user",

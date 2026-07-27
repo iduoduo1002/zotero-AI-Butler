@@ -51,6 +51,7 @@ declare namespace _ZoteroTypes {
       "mineruSyncExternal": boolean;
       "mineruExternalPath": string;
       "mineruFileNameMode": string;
+      "promptLanguage": string;
       "summaryPrompt": string;
       "customPrompts": string;
       "summaryMode": string;

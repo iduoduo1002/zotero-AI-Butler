@@ -9,7 +9,7 @@
  */
 import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
-import { getDefaultSummaryPrompt } from "../utils/prompts";
+import { getConfiguredSummaryPrompt } from "../utils/prompts";
 import { ApiKeyManager, type ProviderId } from "./apiKeyManager";
 import {
   LLMEndpointManager,
@@ -1442,7 +1442,7 @@ export class LLMService {
 
   private static getDefaultPrompt(): string {
     const saved = (getPref("summaryPrompt") as string) || "";
-    return saved.trim() ? saved : getDefaultSummaryPrompt();
+    return getConfiguredSummaryPrompt(saved);
   }
 
   private static notifyError(message: string): void {

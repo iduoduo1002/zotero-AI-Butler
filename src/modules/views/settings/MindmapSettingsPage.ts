@@ -108,8 +108,9 @@ export class MindmapSettingsPage {
     // 提示词编辑器
     const savedPrompt = (getPref("mindmapPrompt" as any) as string) || "";
     const defaultPrompt = getDefaultMindmapPrompt();
-    const isUsingDefaultPrompt = !savedPrompt.trim();
-    const effectivePrompt = isUsingDefaultPrompt ? defaultPrompt : savedPrompt;
+    const effectivePrompt = getConfiguredMindmapPrompt(savedPrompt);
+    const isUsingDefaultPrompt =
+      !savedPrompt.trim() || effectivePrompt.trim() !== savedPrompt.trim();
 
     const promptStatus = this.createElement("div", {
       textContent: isUsingDefaultPrompt

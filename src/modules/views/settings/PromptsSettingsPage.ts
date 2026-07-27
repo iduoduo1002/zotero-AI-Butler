@@ -6,6 +6,9 @@
 
 import { getPref, setPref } from "../../../utils/prefs";
 import {
+  getConfiguredSummaryPrompt,
+  getDefaultPromptLanguagePreference,
+  getResolvedDefaultPromptLanguage,
   getDefaultSummaryPrompt,
   getDefaultTableTemplate,
   getDefaultTableFillPrompt,
@@ -13,6 +16,7 @@ import {
   getConfiguredTableTemplate,
   getConfiguredTableFillPrompt,
   getConfiguredTableReviewPrompt,
+  isKnownDefaultSummaryPrompt,
   PROMPT_VERSION,
   getDefaultMultiRoundPromptTemplate,
   DEFAULT_MULTI_ROUND_PLANNING_PROMPT,
@@ -120,6 +124,7 @@ export class PromptsSettingsPage {
     contentWrapper.appendChild(title);
 
     contentWrapper.appendChild(createNotice(this.getPageNotice(), "info"));
+    contentWrapper.appendChild(this.renderDefaultPromptLanguageSetting());
 
     // =========== AI 精读提示词设置 ===========
     const modeSection = Zotero.getMainWindow().document.createElement("div");
@@ -214,8 +219,9 @@ export class PromptsSettingsPage {
 
     // 预设选择
     const presets = this.getAllPresets();
-    const currentPrompt =
-      (getPref("summaryPrompt") as string) || getDefaultSummaryPrompt();
+    const currentPrompt = getConfiguredSummaryPrompt(
+      getPref("summaryPrompt") as string,
+    );
     const presetOptions = Object.keys(presets).map((name) => ({
       value: name,
       label: name,
@@ -408,6 +414,48 @@ export class PromptsSettingsPage {
   }
 
   // ===== helpers =====
+  private renderDefaultPromptLanguageSetting(): HTMLElement {
+    const select = createSelect(
+      "promptLanguage",
+      [
+        {
+          value: "auto",
+          label: getString("settings-prompts-language-auto"),
+        },
+        {
+          value: "zh-CN",
+          label: getString("settings-prompts-language-zh"),
+        },
+        {
+          value: "en-US",
+          label: getString("settings-prompts-language-en"),
+        },
+      ],
+      getDefaultPromptLanguagePreference(),
+      (newValue) => {
+        const oldSummaryPrompt = (getPref("summaryPrompt") as string) || "";
+        setPref("promptLanguage" as any, newValue as any);
+
+        if (isKnownDefaultSummaryPrompt(oldSummaryPrompt)) {
+          setPref("summaryPrompt", getDefaultSummaryPrompt());
+          setPref("promptVersion" as any, PROMPT_VERSION as any);
+        }
+
+        this.render();
+        this.showPromptToast(
+          getString("settings-prompts-language-saved"),
+          "success",
+        );
+      },
+    );
+
+    return createFormGroup(
+      getString("settings-prompts-language-label"),
+      select,
+      getString("settings-prompts-language-help"),
+    );
+  }
+
   private getSummaryPanelStyle(): Partial<CSSStyleDeclaration> {
     return {
       padding: "16px",
@@ -455,15 +503,19 @@ export class PromptsSettingsPage {
   }
 
   private getBuiltinSummaryPresets(): PresetMap {
+    const useEnglish = getResolvedDefaultPromptLanguage() === "en-US";
     return {
       [getString("settings-prompts-builtin-default")]:
         getDefaultSummaryPrompt(),
-      [getString("settings-prompts-builtin-concise")]:
-        `你是一名学术助手。请用中文以简洁的要点方式总结论文主要问题、方法、关键结果与结论。文章信息: 标题=${"${title}"}; 作者=${"${authors}"}; 年份=${"${year}"}`,
-      [getString("settings-prompts-builtin-structured")]:
-        `请以"背景/方法/结果/讨论/局限/结论"六部分结构化总结论文; 开头写:《${"${title}"}》(${" ${year} "}).`,
-      [getString("settings-prompts-builtin-computer")]:
-        `帮我用中文讲一下这篇计算机领域的论文，讲的越详细越好，我有通用计算机专业基础，但是没有这个小方向的基础。输出的时候只包含关于论文的讲解，不要包含寒暄的内容。开始时先用一段话总结这篇论文的核心内容。`,
+      [getString("settings-prompts-builtin-concise")]: useEnglish
+        ? `You are an academic assistant. Summarize the paper's main problem, method, key results, and conclusion concisely in English bullet points. Paper metadata: title=${"${title}"}; authors=${"${authors}"}; year=${"${year}"}`
+        : `你是一名学术助手。请用中文以简洁的要点方式总结论文主要问题、方法、关键结果与结论。文章信息: 标题=${"${title}"}; 作者=${"${authors}"}; 年份=${"${year}"}`,
+      [getString("settings-prompts-builtin-structured")]: useEnglish
+        ? `Summarize the paper in English using six sections: Background / Method / Results / Discussion / Limitations / Conclusion. Start with: ${"${title}"} (${"${year}"}).`
+        : `请以"背景/方法/结果/讨论/局限/结论"六部分结构化总结论文; 开头写:《${"${title}"}》(${" ${year} "}).`,
+      [getString("settings-prompts-builtin-computer")]: useEnglish
+        ? `Explain this computer-science paper in English in as much detail as possible. I have general computer-science background knowledge, but not necessarily in this specific subarea. Only output the explanation of the paper; do not include greetings or small talk. Start with one paragraph summarizing the core idea of the paper.`
+        : `帮我用中文讲一下这篇计算机领域的论文，讲的越详细越好，我有通用计算机专业基础，但是没有这个小方向的基础。输出的时候只包含关于论文的讲解，不要包含寒暄的内容。开始时先用一段话总结这篇论文的核心内容。`,
     };
   }
 
@@ -2616,8 +2668,9 @@ export class PromptsSettingsPage {
     });
 
     // 1. 表格模板编辑
-    const currentTemplate =
-      (getPref("tableTemplate" as any) as string) || getDefaultTableTemplate();
+    const currentTemplate = getConfiguredTableTemplate(
+      getPref("tableTemplate" as any) as string,
+    );
     const templateEditor = createTextarea(
       "table-template-editor",
       currentTemplate,
@@ -2633,9 +2686,9 @@ export class PromptsSettingsPage {
     );
 
     // 2. 填表提示词
-    const currentFillPrompt =
-      (getPref("tableFillPrompt" as any) as string) ||
-      getDefaultTableFillPrompt();
+    const currentFillPrompt = getConfiguredTableFillPrompt(
+      getPref("tableFillPrompt" as any) as string,
+    );
     const fillPromptEditor = createTextarea(
       "table-fill-prompt-editor",
       currentFillPrompt,
@@ -2651,9 +2704,9 @@ export class PromptsSettingsPage {
     );
 
     // 3. 汇总综述提示词
-    const currentReviewPrompt =
-      (getPref("tableReviewPrompt" as any) as string) ||
-      getDefaultTableReviewPrompt();
+    const currentReviewPrompt = getConfiguredTableReviewPrompt(
+      getPref("tableReviewPrompt" as any) as string,
+    );
     const reviewPromptEditor = createTextarea(
       "table-review-prompt-editor",
       currentReviewPrompt,
