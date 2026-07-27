@@ -726,7 +726,7 @@ export class TaskQueueView extends BaseView {
     taskItem.addEventListener("dblclick", async () => {
       try {
         const zoteroPane = Zotero.getActiveZoteroPane();
-        await zoteroPane.selectItem(task.itemId);
+        await zoteroPane?.selectItem(task.itemId);
         ztoolkit.log(
           `[AI-Butler] 定位到文献: ${task.title} (ID: ${task.itemId})`,
         );

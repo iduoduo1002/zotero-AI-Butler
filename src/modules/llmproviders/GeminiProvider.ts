@@ -217,7 +217,7 @@ export class GeminiProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -436,7 +436,7 @@ export class GeminiProvider implements ILlmProvider {
         message: errorMessage,
       });
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -687,6 +687,7 @@ export class GeminiProvider implements ILlmProvider {
           "Gemini file upload initialization",
           error.message,
         ),
+        { cause: error },
       );
     }
 
@@ -716,6 +717,7 @@ export class GeminiProvider implements ILlmProvider {
       ztoolkit.log("[AI-Butler] Gemini 文件上传失败:", error);
       throw new Error(
         providerStreamUnexpectedEnd("Gemini file upload", error.message),
+        { cause: error },
       );
     }
   }
@@ -913,7 +915,7 @@ export class GeminiProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }

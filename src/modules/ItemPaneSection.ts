@@ -160,11 +160,7 @@ let currentChatState: ChatState = {
 };
 
 type SidebarAutoRefreshTarget =
-  | "summary"
-  | "deepRead"
-  | "imageSummary"
-  | "mindmap"
-  | "table";
+  "summary" | "deepRead" | "imageSummary" | "mindmap" | "table";
 
 let sidebarContext: {
   doc: Document;
@@ -600,7 +596,10 @@ async function runSidebarRefresh(): Promise<void> {
 
   let item: Zotero.Item = sidebarContext.item;
   try {
-    item = await Zotero.Items.getAsync(itemId);
+    const refreshedItem = await Zotero.Items.getAsync(itemId);
+    if (refreshedItem) {
+      item = refreshedItem;
+    }
   } catch {
     // ignore and use cached item instance
   }
@@ -763,7 +762,10 @@ export async function refreshCurrentItemPaneSection(): Promise<void> {
 
   let item = sidebarRenderContext.item;
   try {
-    item = await Zotero.Items.getAsync(itemId);
+    const refreshedItem = await Zotero.Items.getAsync(itemId);
+    if (refreshedItem) {
+      item = refreshedItem;
+    }
   } catch {
     // 使用缓存的 item 继续刷新
   }
@@ -5433,12 +5435,9 @@ async function loadNoteContent(
 
           if (isBlock) {
             // Removing delimiters
-            let latex = "";
-            if (isDoubleDollar) {
-              latex = trimmed.slice(2, -2);
-            } else {
-              latex = trimmed.slice(1, -1);
-            }
+            const latex = isDoubleDollar
+              ? trimmed.slice(2, -2)
+              : trimmed.slice(1, -1);
 
             try {
               const rendered = katex.renderToString(cleanLatex(latex), {

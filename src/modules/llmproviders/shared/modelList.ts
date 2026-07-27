@@ -81,7 +81,7 @@ export async function requestModelListJson(
     if (status) {
       errorMessage = `HTTP ${status}: ${errorMessage}`;
     }
-    throw new Error(errorMessage);
+    throw new Error(errorMessage, { cause: error });
   }
 }
 

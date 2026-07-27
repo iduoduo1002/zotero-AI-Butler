@@ -1030,9 +1030,7 @@ export class ImageSummarySettingsPage {
 
   private setInputValue(id: string, value: string): void {
     const input = this.container.querySelector("#setting-" + id) as
-      | HTMLInputElement
-      | HTMLTextAreaElement
-      | null;
+      HTMLInputElement | HTMLTextAreaElement | null;
     if (!input) return;
     input.value = value;
     input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1079,8 +1077,7 @@ export class ImageSummarySettingsPage {
 
       for (const field of fields) {
         const input = this.container.querySelector(`#setting-${field}`) as
-          | HTMLInputElement
-          | HTMLTextAreaElement;
+          HTMLInputElement | HTMLTextAreaElement;
         if (input) {
           setPref(field as any, input.value.trim() as any);
         }

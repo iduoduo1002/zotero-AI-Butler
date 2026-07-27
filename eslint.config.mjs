@@ -35,6 +35,7 @@ export default [
       "no-useless-escape": "off",
       "no-cond-assign": "off",
       "no-unreachable": "off",
+      "no-useless-assignment": "off",
     },
   },
 ];

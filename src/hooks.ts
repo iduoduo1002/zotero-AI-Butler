@@ -304,8 +304,7 @@ function initializeDefaultPrefsOnStartup() {
       // 特殊处理:检查提示词是否需要升级
       if (key === "summaryPrompt") {
         const currentPromptVersion = getPref("promptVersion" as any) as
-          | number
-          | undefined;
+          number | undefined;
         const currentPrompt = currentValue as string | undefined;
 
         // 如果提示词版本过时,自动升级到最新版本
@@ -1060,7 +1059,8 @@ function registerContextMenuItem() {
   unregisterContextMenuItems(menu);
 
   const isRegularItemSelection = () => {
-    const selectedItems = Zotero.getActiveZoteroPane().getSelectedItems();
+    const selectedItems =
+      Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
     return (
       selectedItems?.every((item: Zotero.Item) => item.isRegularItem()) || false
     );
@@ -1144,7 +1144,8 @@ function registerContextMenuItem() {
         label: getString("menuitem-chatWithAI"),
         icon: menuIcon,
         commandListener: async () => {
-          const selectedItems = Zotero.getActiveZoteroPane().getSelectedItems();
+          const selectedItems =
+            Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
           const item = selectedItems?.[0];
           if (item?.isRegularItem()) {
             await handleOpenAIChat(item.id);
@@ -1152,7 +1153,8 @@ function registerContextMenuItem() {
         },
         getVisibility: () =>
           isContextMenuItemEnabled("chatWithAI") &&
-          Zotero.getActiveZoteroPane().getSelectedItems()?.length === 1 &&
+          (Zotero.getActiveZoteroPane()?.getSelectedItems() ?? []).length ===
+            1 &&
           isRegularItemSelection(),
       },
     },
@@ -1273,11 +1275,12 @@ function registerLibraryToolbarButton(win: Window) {
 
     // 创建按钮
     const button = doc.createXULElement("toolbarbutton") as XULElement;
-    button.setAttribute("label", "🤖");
+    const iconURI = `chrome://${config.addonRef}/content/icons/icon24.png`;
+    button.setAttribute("image", iconURI);
     button.setAttribute("tooltiptext", getString("library-toolbar-ai-butler"));
     button.setAttribute("class", "zotero-tb-button");
     (button as any).style.cssText = `
-      font-size: 16px;
+      list-style-image: url("${iconURI}");
       cursor: pointer;
     `;
 
@@ -1341,8 +1344,8 @@ function registerReaderToolbarButton() {
 
     // 创建按钮 - 使用图标而非文字以适应窄工具栏
     const button = doc.createElement("button");
+    const iconURI = `chrome://${config.addonRef}/content/icons/icon24.png`;
     button.className = "toolbar-button ai-butler-reader-chat-btn";
-    button.innerHTML = `🤖`;
     button.title = getString("reader-toolbar-chat-title");
     button.style.cssText = `
       padding: 4px 8px;
@@ -1351,9 +1354,20 @@ function registerReaderToolbarButton() {
       background: transparent;
       color: inherit;
       cursor: pointer;
-      font-size: 16px;
       transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     `;
+    const icon = doc.createElement("img");
+    icon.src = iconURI;
+    icon.alt = "";
+    icon.style.cssText = `
+      width: 18px;
+      height: 18px;
+      display: block;
+    `;
+    button.appendChild(icon);
 
     // 悬停效果
     button.addEventListener("mouseenter", () => {
@@ -1601,7 +1615,7 @@ async function handleGenerateSummary() {
   }
 
   // 第二步:获取用户选中的文献条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
 
   if (items.length === 0) {
     // 未选中任何条目,提示用户
@@ -1797,7 +1811,7 @@ function onShortcuts(type: string) {
  */
 async function handleImageSummary() {
   // 1. 获取选中条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
@@ -1865,7 +1879,7 @@ async function handleImageSummary() {
  */
 async function handleMindmapGeneration() {
   // 1. 获取选中条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
@@ -1937,7 +1951,7 @@ async function handleLiteratureReview() {
   try {
     // 获取当前选中的分类
     const zoteroPane = Zotero.getActiveZoteroPane();
-    const collection = zoteroPane.getSelectedCollection();
+    const collection = zoteroPane?.getSelectedCollection();
 
     if (!collection) {
       new ztoolkit.ProgressWindow("AI Butler", {
@@ -1983,7 +1997,7 @@ async function handleLiteratureReview() {
 async function handleClearCollectionAiNotes() {
   try {
     const zoteroPane = Zotero.getActiveZoteroPane();
-    const collection = zoteroPane.getSelectedCollection();
+    const collection = zoteroPane?.getSelectedCollection();
 
     if (!collection) {
       showAIButlerToast(getString("collection-error-no-collection"), "error");
@@ -2079,7 +2093,7 @@ type CollectionExportDialogChoice = {
 
 async function handleExportCollectionNotes() {
   try {
-    const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
+    const collection = Zotero.getActiveZoteroPane()?.getSelectedCollection();
     if (!collection) {
       showAIButlerToast(getString("collection-error-no-collection"), "error");
       return;
@@ -2524,7 +2538,7 @@ async function handleFillTable() {
     return;
   }
 
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,
@@ -2593,7 +2607,7 @@ async function handleMultiRoundSummary() {
     "openai";
 
   // 2. 获取选中条目
-  const items = Zotero.getActiveZoteroPane().getSelectedItems();
+  const items = Zotero.getActiveZoteroPane()?.getSelectedItems() ?? [];
   if (!items || items.length === 0) {
     new ztoolkit.ProgressWindow("AI Butler", {
       closeOnClick: true,

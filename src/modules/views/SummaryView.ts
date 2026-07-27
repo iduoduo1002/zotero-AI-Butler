@@ -70,8 +70,7 @@ export class SummaryView extends BaseView {
 
   /** Deep-read single-slot retry handler */
   private deepReadRetryHandler:
-    | ((slotId: string) => void | Promise<void>)
-    | null = null;
+    ((slotId: string) => void | Promise<void>) | null = null;
 
   /** 返回任务队列按钮回调函数 (支持 Promise, 以便外部执行异步逻辑) */
   private onQueueButtonCallback: (() => void | Promise<void>) | null = null;
@@ -568,14 +567,13 @@ export class SummaryView extends BaseView {
     const assistantMessageContainer = this.appendChatMessage("assistant", "");
 
     // 将“用户+助手”两条消息包装为一张卡片，便于整体删除与管理
-    let pairContainer: HTMLElement | null = null;
     const pairId = this.generatePairId();
     if (
       this.outputContainer &&
       userMessageElement &&
       assistantMessageContainer
     ) {
-      pairContainer = this.createElement("div", {
+      const pairContainer = this.createElement("div", {
         className: "ai-butler-chat-pair",
         styles: {
           position: "relative",

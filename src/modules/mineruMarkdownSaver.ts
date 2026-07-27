@@ -248,6 +248,7 @@ export class MineruMarkdownSaver {
   ): Promise<Zotero.Item | null> {
     for (const attachmentID of item.getAttachments()) {
       const attachment = await Zotero.Items.getAsync(attachmentID);
+      if (!attachment) continue;
       const title = String(attachment.getField("title") || "");
       const contentType = String(attachment.attachmentContentType || "");
       const tags = (attachment.getTags?.() || []).map((tag: any) => tag.tag);

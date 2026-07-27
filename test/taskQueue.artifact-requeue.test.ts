@@ -109,17 +109,9 @@ describe("TaskQueue artifact-aware requeue", function () {
     originalProbe = TaskArtifacts.probe;
     originalFindNote = AiNoteService.findNote;
     originalNoteStrategy = Zotero.Prefs.get(noteStrategyPref, true) as
-      | string
-      | number
-      | boolean
-      | null
-      | undefined;
+      string | number | boolean | null | undefined;
     originalTableStrategy = Zotero.Prefs.get(tableStrategyPref, true) as
-      | string
-      | number
-      | boolean
-      | null
-      | undefined;
+      string | number | boolean | null | undefined;
     Zotero.Prefs.set(noteStrategyPref, "skip", true);
     Zotero.Prefs.set(tableStrategyPref, "skip", true);
   });

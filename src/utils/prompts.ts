@@ -381,8 +381,7 @@ export interface MultiRoundIndependentPhase {
 }
 
 export type MultiRoundPromptPhase =
-  | MultiRoundSequentialDynamicPhase
-  | MultiRoundIndependentPhase;
+  MultiRoundSequentialDynamicPhase | MultiRoundIndependentPhase;
 
 export const MULTI_ROUND_PROMPT_TEMPLATE_SCHEMA =
   "zotero-ai-butler.multi-round-prompt-template";
@@ -421,8 +420,7 @@ interface DeepReadSequentialDynamicPhaseDefaults extends Omit<
 }
 
 type DeepReadPromptPhaseDefaults =
-  | DeepReadSequentialDynamicPhaseDefaults
-  | MultiRoundIndependentPhase;
+  DeepReadSequentialDynamicPhaseDefaults | MultiRoundIndependentPhase;
 
 interface DeepReadPromptTemplateDefaults extends Omit<
   MultiRoundPromptTemplate,

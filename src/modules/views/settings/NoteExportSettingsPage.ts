@@ -259,7 +259,7 @@ export class NoteExportSettingsPage {
     );
     Object.assign(addSelectedButton.style, { borderRadius: "10px" });
     addSelectedButton.addEventListener("click", () => {
-      const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
+      const collection = Zotero.getActiveZoteroPane()?.getSelectedCollection();
       if (!collection) {
         showToast(
           getString("settings-note-export-select-collection-first"),

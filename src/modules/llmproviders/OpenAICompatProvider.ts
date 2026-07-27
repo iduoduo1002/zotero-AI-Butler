@@ -310,7 +310,7 @@ export class OpenAICompatProvider implements ILlmProvider {
         } catch {
           /* ignore */
         }
-        throw new Error(errorMessage);
+        throw new Error(errorMessage, { cause: error });
       } finally {
         cleanupAbortSignal?.();
       }
@@ -366,7 +366,7 @@ export class OpenAICompatProvider implements ILlmProvider {
       } catch {
         /* ignore */
       }
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: e });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -576,7 +576,7 @@ export class OpenAICompatProvider implements ILlmProvider {
       } catch {
         /* ignore */
       }
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -946,7 +946,7 @@ export class OpenAICompatProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }

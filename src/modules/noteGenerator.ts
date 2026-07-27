@@ -169,7 +169,7 @@ export class NoteGenerator {
     const itemTitle = item.getField("title") as string;
     let note: Zotero.Item | null = null;
     let fullContent = "";
-    let llmMetadata: LLMNoteMetadata | null = null;
+    let llmMetadata: LLMNoteMetadata | null;
     let noteContentOverride: string | null = null;
 
     try {

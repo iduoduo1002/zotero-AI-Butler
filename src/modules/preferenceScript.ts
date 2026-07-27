@@ -261,8 +261,7 @@ function initializeDefaultPrefs() {
       // 特殊处理提示词更新
       if (key === "summaryPrompt") {
         const currentPromptVersion = getPref("promptVersion" as any) as
-          | number
-          | undefined;
+          number | undefined;
         const currentPrompt = currentValue as string | undefined;
 
         // 检查是否需要更新提示词

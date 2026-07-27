@@ -19,12 +19,7 @@ export type ConversationMessage = {
 };
 
 export type LLMReasoningEffort =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+  "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type LLMReasoningEffortSetting = "default" | LLMReasoningEffort;
 

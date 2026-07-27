@@ -20,9 +20,7 @@ export interface QuickChatRelatedContextItem {
 }
 
 export type QuickChatRelatedSkipReason =
-  | "missing-item"
-  | "missing-summary"
-  | "extract-failed";
+  "missing-item" | "missing-summary" | "extract-failed";
 
 export interface QuickChatRelatedContextSkip {
   ref: QuickChatRelatedItemRef;
@@ -205,7 +203,7 @@ export async function resolveQuickChatRelatedContext(
       continue;
     }
 
-    let rawContent: string | null = null;
+    let rawContent: string | null;
     try {
       rawContent =
         normalizedMode === "summary"
