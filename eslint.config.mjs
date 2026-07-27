@@ -21,6 +21,7 @@ export default [
       "addon/lib/**/*.js",
       "addon/content/**/*.js",
       "scripts/**/*.mjs",
+      "scripts/**/*.cjs",
       "scripts/**/*.ts",
     ],
     rules: {

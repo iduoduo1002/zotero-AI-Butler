@@ -1,11 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
-import ts from "typescript";
+import { createRequire } from "node:module";
 import { parse as parseFluentResource } from "@fluent/syntax";
 
 const LOCALES = ["en-US", "zh-CN"];
 const FTL_FILES = ["addon.ftl", "mainWindow.ftl", "preferences.ftl"];
 const ROOT = process.cwd();
+const require = createRequire(import.meta.url);
+const ts = require(
+  path.join(
+    ROOT,
+    "node_modules",
+    "@zotero-plugin",
+    "eslint-config",
+    "node_modules",
+    "typescript",
+  ),
+);
 
 function readAllFtlKeys(locale = "en-US") {
   const keys = new Set();
