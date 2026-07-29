@@ -23,6 +23,15 @@ export type LLMReasoningEffort =
 
 export type LLMReasoningEffortSetting = "default" | LLMReasoningEffort;
 
+export type LLMTruncationState = {
+  providerId: string;
+  source: string;
+  finishReason: string;
+  truncated: boolean;
+  autoContinuable: boolean;
+  kind: "max_tokens" | "context_window" | "other";
+};
+
 export type LLMOptions = {
   apiUrl?: string;
   apiKey?: string;
@@ -36,6 +45,7 @@ export type LLMOptions = {
   enablePromptCache?: boolean;
   vendorOptions?: Record<string, unknown>;
   abortSignal?: LLMAbortSignal;
+  truncation?: LLMTruncationState;
 };
 
 export type LLMProviderParam =

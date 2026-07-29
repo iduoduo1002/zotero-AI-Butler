@@ -764,6 +764,23 @@ export class ApiSettingsPage {
       ),
     );
 
+    const autoContinuationInput = this.createInput(
+      "autoContinuationRounds",
+      "number",
+      ((getPref("autoContinuationRounds" as any) as string) || "2") as string,
+      "2",
+    );
+    autoContinuationInput.min = "0";
+    autoContinuationInput.max = "10";
+    autoContinuationInput.step = "1";
+    form.appendChild(
+      this.createFormGroup(
+        getString("settings-api-auto-continuation-rounds-label"),
+        autoContinuationInput,
+        getString("settings-api-auto-continuation-rounds-help"),
+      ),
+    );
+
     // === 调度配置分隔线 ===
     const scheduleTitle = this.createElement("h3", {
       textContent: getString("settings-api-schedule-section-title"),
@@ -2821,6 +2838,9 @@ export class ApiSettingsPage {
       const promptCacheEl = this.container.querySelector(
         "#setting-enablePromptCacheOptimization",
       ) as HTMLInputElement;
+      const autoContinuationEl = this.container.querySelector(
+        "#setting-autoContinuationRounds",
+      ) as HTMLInputElement;
       // 调度配置
       const batchSizeEl = this.container.querySelector(
         "#setting-batchSize",
@@ -2887,6 +2907,15 @@ export class ApiSettingsPage {
               "#setting-requestTimeout",
             ) as HTMLInputElement
           )?.value?.trim() || "300000",
+        autoContinuationRounds: String(
+          Math.min(
+            Math.max(
+              parseInt(autoContinuationEl?.value?.trim() || "2", 10) || 0,
+              0,
+            ),
+            10,
+          ),
+        ),
         batchSize: batchSizeEl?.value?.trim() || "1",
         batchInterval: batchIntervalEl?.value?.trim() || "60",
         scanInterval: scanIntervalEl?.value?.trim() || "300",
@@ -3035,6 +3064,10 @@ export class ApiSettingsPage {
         values.enablePromptCacheOptimization,
       );
       setPref("requestTimeout", values.requestTimeout);
+      setPref(
+        "autoContinuationRounds" as any,
+        values.autoContinuationRounds as any,
+      );
       // 调度配置
       setPref("batchSize", values.batchSize);
       setPref("batchInterval", values.batchInterval);
@@ -3544,6 +3577,7 @@ export class ApiSettingsPage {
     setPref("stream", true);
     setPref("enablePromptCacheOptimization" as any, true);
     setPref("requestTimeout", "300000");
+    setPref("autoContinuationRounds" as any, "2" as any);
     setPref("batchSize", "1");
     setPref("batchInterval", "60");
     setPref("scanInterval", "300");
@@ -3633,6 +3667,7 @@ export class ApiSettingsPage {
     setPref("stream", true);
     setPref("enablePromptCacheOptimization" as any, true);
     setPref("requestTimeout", "300000");
+    setPref("autoContinuationRounds" as any, "2" as any);
 
     // 重新渲染
     this.render();

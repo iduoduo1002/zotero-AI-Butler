@@ -25,6 +25,7 @@ import {
   normalizeAbortError,
   throwIfAborted,
 } from "./shared/requestAbort";
+import { recordFinishReason } from "./shared/truncation";
 import {
   providerHttpRequestFailed,
   providerMissingApiKey,
@@ -343,7 +344,10 @@ export class OllamaProvider implements ILlmProvider {
         },
       });
       throwIfAborted(options.abortSignal);
-      const text = this.extractTextFromRawResponse(response.response || "");
+      const text = this.extractTextFromRawResponse(
+        response.response || "",
+        options,
+      );
       if (!text) throw new Error(providerRequestFailed("Ollama"));
       if (onProgress) await onProgress(text);
       return text;
@@ -393,7 +397,7 @@ export class OllamaProvider implements ILlmProvider {
       for (const rawLine of lines) {
         const line = rawLine.trim();
         if (!line) continue;
-        const chunk = this.extractTextFromStreamLine(line);
+        const chunk = this.extractTextFromStreamLine(line, options);
         if (chunk) deliver(chunk);
       }
     };
@@ -476,11 +480,22 @@ export class OllamaProvider implements ILlmProvider {
     return text;
   }
 
-  private extractTextFromStreamLine(line: string): string {
+  private extractTextFromStreamLine(
+    line: string,
+    options?: LLMOptions,
+  ): string {
     const jsonText = line.replace(/^data:\s*/, "").trim();
     if (!jsonText || jsonText === "[DONE]") return "";
     try {
       const data = JSON.parse(jsonText);
+      if (options) {
+        recordFinishReason(
+          options,
+          "ollama",
+          "done_reason",
+          data?.done_reason || data?.finish_reason,
+        );
+      }
       return this.extractText(data);
     } catch (error) {
       ztoolkit.log("[AI-Butler] Ollama stream parse error:", error);
@@ -488,18 +503,32 @@ export class OllamaProvider implements ILlmProvider {
     }
   }
 
-  private extractTextFromRawResponse(rawResponse: string): string {
+  private extractTextFromRawResponse(
+    rawResponse: string,
+    options?: LLMOptions,
+  ): string {
     if (!rawResponse) return "";
     const trimmed = rawResponse.trim();
     if (!trimmed) return "";
 
     const lines = trimmed.split(/\r?\n/).filter((line) => line.trim());
     if (lines.length > 1) {
-      return lines.map((line) => this.extractTextFromStreamLine(line)).join("");
+      return lines
+        .map((line) => this.extractTextFromStreamLine(line, options))
+        .join("");
     }
 
     try {
-      return this.extractText(JSON.parse(trimmed));
+      const data = JSON.parse(trimmed);
+      if (options) {
+        recordFinishReason(
+          options,
+          "ollama",
+          "done_reason",
+          data?.done_reason || data?.finish_reason,
+        );
+      }
+      return this.extractText(data);
     } catch {
       return trimmed;
     }

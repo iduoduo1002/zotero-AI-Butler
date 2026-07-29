@@ -25,6 +25,7 @@ import {
   normalizeAbortError,
   throwIfAborted,
 } from "./shared/requestAbort";
+import { recordFinishReason } from "./shared/truncation";
 import {
   providerHttpRequestFailed,
   providerMissingApiKey,
@@ -233,6 +234,12 @@ export class OpenAICompatProvider implements ILlmProvider {
                       if (typeof reason === "string" && reason.length > 0) {
                         finishReason = reason;
                         streamComplete = true;
+                        recordFinishReason(
+                          options,
+                          "openai-compat",
+                          "choices.finish_reason",
+                          reason,
+                        );
                       }
                       const delta = evt?.choices?.[0]?.delta?.content;
                       if (typeof delta === "string" && delta.length > 0) {
@@ -341,6 +348,12 @@ export class OpenAICompatProvider implements ILlmProvider {
       });
       throwIfAborted(options.abortSignal);
       const data = res.response || res;
+      recordFinishReason(
+        options,
+        "openai-compat",
+        "choices.finish_reason",
+        data?.choices?.[0]?.finish_reason,
+      );
       const text = data?.choices?.[0]?.message?.content || "";
       const result = typeof text === "string" ? text : JSON.stringify(text);
       if (onProgress && result) await onProgress(result);
@@ -496,6 +509,12 @@ export class OpenAICompatProvider implements ILlmProvider {
                     if (typeof reason === "string" && reason.length > 0) {
                       finishReason = reason;
                       streamComplete = true;
+                      recordFinishReason(
+                        options,
+                        "openai-compat",
+                        "choices.finish_reason",
+                        reason,
+                      );
                     }
                     const delta = evt?.choices?.[0]?.delta?.content;
                     if (typeof delta === "string" && delta.length > 0) {
@@ -599,7 +618,7 @@ export class OpenAICompatProvider implements ILlmProvider {
     if (!streamComplete) {
       throw new Error(providerStreamMissingDone("OpenAI Compatible"));
     }
-    if (finishReason && finishReason !== "stop") {
+    if (finishReason && finishReason !== "stop" && finishReason !== "length") {
       throw new Error(
         providerStreamUnexpectedEnd("OpenAI Compatible", finishReason),
       );
@@ -874,6 +893,12 @@ export class OpenAICompatProvider implements ILlmProvider {
                   if (!jsonStr || jsonStr === "[DONE]") continue;
                   try {
                     const evt = JSON.parse(jsonStr);
+                    recordFinishReason(
+                      options,
+                      "openai-compat",
+                      "choices.finish_reason",
+                      evt?.choices?.[0]?.finish_reason,
+                    );
                     const delta = evt?.choices?.[0]?.delta?.content;
                     if (typeof delta === "string" && delta.length > 0) {
                       gotAnyDelta = true;

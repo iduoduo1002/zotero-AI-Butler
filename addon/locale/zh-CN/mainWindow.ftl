@@ -1135,3 +1135,7 @@ snapshot-error-empty-file = 网页快照文件为空或无法读取
 snapshot-error-no-readable-text = 无法从网页快照中提取可读文本
 llm-warning-web-snapshot-used = 已使用网页快照文本作为本次分析内容。
 llm-warning-attachment-as-text = 当前附件将按文本内容进行分析。
+
+llm-warning-auto-continuation-used = 检测到输出被截断，已自动续写 { $count } 轮。
+llm-warning-auto-continuation-still-truncated = 自动续写 { $count } 轮后输出仍被截断。建议调高 Max Tokens，或使用非推理模型/降低推理强度。
+llm-warning-auto-continuation-disabled = 检测到输出被截断，但自动续写轮数为 0，未继续调用 API。

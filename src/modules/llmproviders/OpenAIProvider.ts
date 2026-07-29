@@ -31,6 +31,11 @@ import {
   throwIfAborted,
 } from "./shared/requestAbort";
 import {
+  recordFinishReason,
+  recordOpenAIResponsesObject,
+  recordOpenAIResponsesTerminalEvent,
+} from "./shared/truncation";
+import {
   providerHttpRequestFailed,
   providerMissingApiKey,
   providerMissingApiUrl,
@@ -187,6 +192,12 @@ export class OpenAIProvider implements ILlmProvider {
                       if (!jsonStr || jsonStr === "[DONE]") continue;
                       try {
                         const evt = JSON.parse(jsonStr);
+                        recordOpenAIResponsesTerminalEvent(
+                          options,
+                          "openai",
+                          "responses.event",
+                          evt,
+                        );
                         const delta = parseOpenAIResponsesDelta(evt);
                         if (delta) {
                           gotAnyDelta = true;
@@ -293,6 +304,12 @@ export class OpenAIProvider implements ILlmProvider {
         });
         throwIfAborted(options.abortSignal);
         const data = res.response || res;
+        recordOpenAIResponsesObject(
+          options,
+          "openai",
+          "responses.object",
+          data,
+        );
         const text = parseOpenAIResponsesText(data);
         if (onProgress && text) await onProgress(text);
         return text;
@@ -413,6 +430,12 @@ export class OpenAIProvider implements ILlmProvider {
                     }
                     try {
                       const json = JSON.parse(jsonStr);
+                      recordFinishReason(
+                        options,
+                        "openai",
+                        "choices.finish_reason",
+                        json?.choices?.[0]?.finish_reason,
+                      );
                       const delta = json?.choices?.[0]?.delta?.content;
                       if (typeof delta === "string" && delta.length > 0) {
                         gotAnyDelta = true;
@@ -610,7 +633,14 @@ export class OpenAIProvider implements ILlmProvider {
             },
           });
           throwIfAborted(options.abortSignal);
-          const text = parseOpenAIResponsesText(res.response || res);
+          const data = res.response || res;
+          recordOpenAIResponsesObject(
+            options,
+            "openai",
+            "responses.object",
+            data,
+          );
+          const text = parseOpenAIResponsesText(data);
           if (onProgress && text) await onProgress(text);
           return text;
         } catch (error: any) {
@@ -707,6 +737,12 @@ export class OpenAIProvider implements ILlmProvider {
                     if (!jsonStr || jsonStr === "[DONE]") continue;
                     try {
                       const evt = JSON.parse(jsonStr);
+                      recordOpenAIResponsesTerminalEvent(
+                        options,
+                        "openai",
+                        "responses.event",
+                        evt,
+                      );
                       const delta = parseOpenAIResponsesDelta(evt);
                       if (delta) {
                         gotAnyDelta = true;
@@ -1281,6 +1317,12 @@ export class OpenAIProvider implements ILlmProvider {
                   if (!jsonStr || jsonStr === "[DONE]") continue;
                   try {
                     const evt = JSON.parse(jsonStr);
+                    recordOpenAIResponsesTerminalEvent(
+                      options,
+                      "openai",
+                      "responses.event",
+                      evt,
+                    );
                     const t = evt?.type as string;
                     if (
                       t === "response.output_text.delta" &&
@@ -1419,6 +1461,12 @@ export class OpenAIProvider implements ILlmProvider {
       });
       throwIfAborted(options.abortSignal);
       const data = res.response || res;
+      recordFinishReason(
+        options,
+        "openai",
+        "choices.finish_reason",
+        data?.choices?.[0]?.finish_reason,
+      );
       const text = data?.choices?.[0]?.message?.content || "";
       const result = typeof text === "string" ? text : JSON.stringify(text);
       if (onProgress && result) await onProgress(result);

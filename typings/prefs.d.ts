@@ -44,6 +44,7 @@ declare namespace _ZoteroTypes {
       "stream": boolean;
       "enablePromptCacheOptimization": boolean;
       "requestTimeout": string;
+      "autoContinuationRounds": string;
       "mineruApiKey": string;
       "mineruModelVersion": string;
       "mineruSaveMarkdown": boolean;
