@@ -215,6 +215,8 @@ export class DataSettingsPage {
       "enableTopP",
       "reasoningEffort",
       "stream",
+      "requestTimeout",
+      "autoContinuationRounds",
       "summaryPrompt",
       "customPrompts",
       "multiRoundPromptTemplates",
@@ -349,6 +351,7 @@ export class DataSettingsPage {
     setPref("enableMaxTokens", false as any);
     setPref("enableTopP", false as any);
     setPref("stream", true as any);
+    setPref("autoContinuationRounds", "2" as any);
     setPref("theme", "system");
     setPref("fontSize", "14");
     setPref("autoScroll", true as any);

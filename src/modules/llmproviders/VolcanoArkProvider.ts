@@ -25,6 +25,10 @@ import {
   throwIfAborted,
 } from "./shared/requestAbort";
 import {
+  recordFinishReason,
+  recordOpenAIResponsesTerminalEvent,
+} from "./shared/truncation";
+import {
   providerHttpRequestFailed,
   providerMissingApiKey,
   providerMissingApiUrl,
@@ -189,6 +193,18 @@ export class VolcanoArkProvider implements ILlmProvider {
                   if (!jsonStr || jsonStr === "[DONE]") continue;
                   try {
                     const json = JSON.parse(jsonStr);
+                    recordOpenAIResponsesTerminalEvent(
+                      options,
+                      "volcanoark",
+                      "responses.event",
+                      json,
+                    );
+                    recordFinishReason(
+                      options,
+                      "volcanoark",
+                      "choices.finish_reason",
+                      json?.choices?.[0]?.finish_reason,
+                    );
                     const text = this.extractVolcanoText(json);
                     if (text) {
                       gotAnyDelta = true;
@@ -403,6 +419,18 @@ export class VolcanoArkProvider implements ILlmProvider {
 
                   try {
                     const json = JSON.parse(jsonStr);
+                    recordOpenAIResponsesTerminalEvent(
+                      options,
+                      "volcanoark",
+                      "responses.event",
+                      json,
+                    );
+                    recordFinishReason(
+                      options,
+                      "volcanoark",
+                      "choices.finish_reason",
+                      json?.choices?.[0]?.finish_reason,
+                    );
                     const text = this.extractVolcanoText(json);
                     if (text) {
                       gotAnyDelta = true;
@@ -896,6 +924,18 @@ export class VolcanoArkProvider implements ILlmProvider {
                   if (!jsonStr || jsonStr === "[DONE]") continue;
                   try {
                     const json = JSON.parse(jsonStr);
+                    recordOpenAIResponsesTerminalEvent(
+                      options,
+                      "volcanoark",
+                      "responses.event",
+                      json,
+                    );
+                    recordFinishReason(
+                      options,
+                      "volcanoark",
+                      "choices.finish_reason",
+                      json?.choices?.[0]?.finish_reason,
+                    );
                     const text = this.extractVolcanoText(json);
                     if (text) {
                       gotAnyDelta = true;

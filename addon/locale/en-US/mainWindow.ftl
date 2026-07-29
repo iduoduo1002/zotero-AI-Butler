@@ -1135,3 +1135,7 @@ snapshot-error-empty-file = The web snapshot file is empty or cannot be read.
 snapshot-error-no-readable-text = Could not extract readable text from the web snapshot.
 llm-warning-web-snapshot-used = Used web snapshot text as the analysis content.
 llm-warning-attachment-as-text = This attachment will be analyzed as text content.
+
+llm-warning-auto-continuation-used = Output was truncated and automatically continued { $count } round(s).
+llm-warning-auto-continuation-still-truncated = Output is still truncated after { $count } automatic continuation round(s). Consider increasing Max Tokens, or using a non-reasoning model / lower reasoning effort.
+llm-warning-auto-continuation-disabled = Output was truncated, but auto-continuation rounds is set to 0, so no extra API call was made.

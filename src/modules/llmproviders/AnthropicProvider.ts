@@ -24,6 +24,7 @@ import {
   normalizeAbortError,
   throwIfAborted,
 } from "./shared/requestAbort";
+import { recordFinishReason } from "./shared/truncation";
 import {
   providerHttpRequestFailed,
   providerMissingApiKey,
@@ -197,6 +198,14 @@ export class AnthropicProvider implements ILlmProvider {
                   if (!jsonStr) continue;
                   try {
                     const json = JSON.parse(jsonStr);
+                    if (json.type === "message_delta") {
+                      recordFinishReason(
+                        options,
+                        "anthropic",
+                        "message_delta",
+                        json?.delta?.stop_reason,
+                      );
+                    }
                     if (json.type === "content_block_delta") {
                       const text = json?.delta?.text;
                       if (text) {
@@ -414,6 +423,14 @@ export class AnthropicProvider implements ILlmProvider {
 
                   try {
                     const json = JSON.parse(jsonStr);
+                    if (json.type === "message_delta") {
+                      recordFinishReason(
+                        options,
+                        "anthropic",
+                        "message_delta",
+                        json?.delta?.stop_reason,
+                      );
+                    }
                     if (
                       options.enablePromptCache &&
                       json.type === "message_start" &&
@@ -799,6 +816,14 @@ export class AnthropicProvider implements ILlmProvider {
                   if (!jsonStr) continue;
                   try {
                     const json = JSON.parse(jsonStr);
+                    if (json.type === "message_delta") {
+                      recordFinishReason(
+                        options,
+                        "anthropic",
+                        "message_delta",
+                        json?.delta?.stop_reason,
+                      );
+                    }
                     if (json.type === "content_block_delta") {
                       const text = json?.delta?.text;
                       if (text) {

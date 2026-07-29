@@ -24,6 +24,7 @@ import {
   normalizeAbortError,
   throwIfAborted,
 } from "./shared/requestAbort";
+import { recordFinishReason } from "./shared/truncation";
 import {
   providerHttpRequestFailed,
   providerMissingApiKey,
@@ -453,6 +454,12 @@ export class OpenRouterProvider implements ILlmProvider {
 
                   try {
                     const evt = JSON.parse(jsonStr);
+                    recordFinishReason(
+                      options,
+                      "openrouter",
+                      "choices.finish_reason",
+                      evt?.choices?.[0]?.finish_reason,
+                    );
                     const delta = evt?.choices?.[0]?.delta?.content;
                     if (typeof delta === "string" && delta.length > 0) {
                       gotAnyDelta = true;
@@ -543,6 +550,12 @@ export class OpenRouterProvider implements ILlmProvider {
       });
       throwIfAborted(options.abortSignal);
       const data = res.response || res;
+      recordFinishReason(
+        options,
+        "openrouter",
+        "choices.finish_reason",
+        data?.choices?.[0]?.finish_reason,
+      );
       const text = data?.choices?.[0]?.message?.content || "";
       const result = typeof text === "string" ? text : JSON.stringify(text);
       if (onProgress && result) await onProgress(result);

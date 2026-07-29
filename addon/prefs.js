@@ -55,6 +55,7 @@ pref("__prefsPrefix__.reasoningEffort", "default");
 pref("__prefsPrefix__.stream", true);
 pref("__prefsPrefix__.enablePromptCacheOptimization", true);
 pref("__prefsPrefix__.requestTimeout", "300000"); // 5分钟超时
+pref("__prefsPrefix__.autoContinuationRounds", "2");
 // MINERU API KEY
 pref("__prefsPrefix__.mineruApiKey", "");
 pref("__prefsPrefix__.mineruModelVersion", "vlm");

@@ -29,6 +29,10 @@ import {
 } from "./llmproviders/shared/reasoning";
 import { sanitizeLLMOutputText } from "./llmproviders/shared/outputSanitizer";
 import {
+  isAutoContinuableTruncation,
+  resetTruncationState,
+} from "./llmproviders/shared/truncation";
+import {
   isAbortError,
   normalizeAbortError,
   throwIfAborted,
@@ -225,10 +229,25 @@ export class LLMApiExhaustedError extends Error {
 }
 
 export class LLMService {
+  private static readonly DEFAULT_AUTO_CONTINUATION_ROUNDS = 2;
+  private static readonly MAX_AUTO_CONTINUATION_ROUNDS = 10;
+  private static readonly CONTINUATION_TAIL_CHARS = 12000;
+  private static readonly CONTINUATION_DEDUPE_LOOKBACK_CHARS = 4000;
+  private static readonly CONTINUATION_MIN_OVERLAP_CHARS = 16;
+
   static getRequestTimeout(): number {
     const raw = (getPref("requestTimeout") as string) || "300000";
     const val = parseInt(raw, 10) || 300000;
     return Math.max(val, 30000);
+  }
+
+  static getAutoContinuationRounds(): number {
+    const raw =
+      (getPref("autoContinuationRounds" as any) as string) ||
+      String(this.DEFAULT_AUTO_CONTINUATION_ROUNDS);
+    const parsed = parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) return this.DEFAULT_AUTO_CONTINUATION_ROUNDS;
+    return Math.min(Math.max(parsed, 0), this.MAX_AUTO_CONTINUATION_ROUNDS);
   }
 
   static mapToKeyManagerId(providerId: string): ProviderId {
@@ -573,6 +592,230 @@ export class LLMService {
     return provider;
   }
 
+  private static buildContinuationPrompt(originalPrompt: string): string {
+    const trimmed = (originalPrompt || "").trim();
+    return [
+      "The previous assistant response was cut off because it reached the output token limit.",
+      "Continue exactly from where the previous response stopped.",
+      "Do not repeat any content that has already been written. Do not add greetings, explanations, or a new title.",
+      trimmed
+        ? `Original task for context only; keep following it while continuing: ${trimmed}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  private static tailForContinuation(text: string): string {
+    if (text.length <= this.CONTINUATION_TAIL_CHARS) return text;
+    return text.slice(-this.CONTINUATION_TAIL_CHARS);
+  }
+
+  private static appendAutoContinuationWarning(
+    warnings: string[],
+    rounds: number,
+    stillTruncated: boolean,
+  ): void {
+    if (rounds > 0) {
+      warnings.push(
+        getString("llm-warning-auto-continuation-used", {
+          args: { count: rounds },
+        }),
+      );
+    }
+    if (stillTruncated) {
+      warnings.push(
+        rounds > 0
+          ? getString("llm-warning-auto-continuation-still-truncated", {
+              args: { count: rounds },
+            })
+          : getString("llm-warning-auto-continuation-disabled"),
+      );
+    }
+  }
+
+  private static async callProviderAndTrackTruncation(
+    options: LLMOptions,
+    call: () => Promise<string>,
+  ): Promise<string> {
+    resetTruncationState(options);
+    const text = await call();
+    return text;
+  }
+
+  private static removeContinuationOverlap(
+    previousText: string,
+    continuation: string,
+  ): string {
+    if (!previousText || !continuation) return continuation;
+    const previousTail = previousText.slice(
+      -this.CONTINUATION_DEDUPE_LOOKBACK_CHARS,
+    );
+    const maxOverlap = Math.min(previousTail.length, continuation.length);
+    for (
+      let length = maxOverlap;
+      length >= this.CONTINUATION_MIN_OVERLAP_CHARS;
+      length--
+    ) {
+      if (previousTail.slice(-length) === continuation.slice(0, length)) {
+        return continuation.slice(length);
+      }
+    }
+    return continuation;
+  }
+
+  private static async autoContinueSingleContent(
+    provider: ILlmProvider,
+    pdfContent: string,
+    isBase64: boolean,
+    initialConversation: ConversationMessage[],
+    initialText: string,
+    options: LLMOptions,
+    onProgress?: ProgressCb,
+  ): Promise<{ text: string; rounds: number; stillTruncated: boolean }> {
+    let text = "";
+    let rounds = 0;
+    const maxRounds = this.getAutoContinuationRounds();
+    while (
+      rounds < maxRounds &&
+      isAutoContinuableTruncation(options.truncation)
+    ) {
+      throwIfAborted(options.abortSignal);
+      rounds += 1;
+      const conversation: ConversationMessage[] = [
+        ...initialConversation,
+        {
+          role: "assistant",
+          content: this.tailForContinuation(initialText + text),
+        },
+        {
+          role: "user",
+          content: this.buildContinuationPrompt(
+            initialConversation[0]?.content || "",
+          ),
+        },
+      ];
+      const continuation = await this.callProviderAndTrackTruncation(
+        options,
+        () =>
+          provider.chat(
+            pdfContent,
+            isBase64,
+            conversation,
+            options,
+            onProgress,
+          ),
+      );
+      text += this.removeContinuationOverlap(initialText + text, continuation);
+    }
+    return {
+      text,
+      rounds,
+      stillTruncated: isAutoContinuableTruncation(options.truncation),
+    };
+  }
+
+  private static async autoContinueSummaryText(
+    provider: ILlmProvider,
+    pdfContent: string,
+    isBase64: boolean,
+    prompt: string,
+    initialText: string,
+    options: LLMOptions,
+    onProgress?: ProgressCb,
+  ): Promise<{ text: string; rounds: number; stillTruncated: boolean }> {
+    const initialConversation: ConversationMessage[] = [
+      { role: "user", content: prompt || "" },
+    ];
+    const continued = await this.autoContinueSingleContent(
+      provider,
+      pdfContent,
+      isBase64,
+      initialConversation,
+      initialText,
+      options,
+      onProgress,
+    );
+    return {
+      text: initialText + continued.text,
+      rounds: continued.rounds,
+      stillTruncated: continued.stillTruncated,
+    };
+  }
+
+  private static async autoContinueChatText(
+    provider: ILlmProvider,
+    pdfContent: string,
+    isBase64: boolean,
+    conversation: ConversationMessage[],
+    initialText: string,
+    options: LLMOptions,
+    onProgress?: ProgressCb,
+  ): Promise<{ text: string; rounds: number; stillTruncated: boolean }> {
+    const baseConversation =
+      conversation && conversation.length > 0
+        ? conversation
+        : [{ role: "user", content: "" } as ConversationMessage];
+    const continued = await this.autoContinueSingleContent(
+      provider,
+      pdfContent,
+      isBase64,
+      baseConversation,
+      initialText,
+      options,
+      onProgress,
+    );
+    return {
+      text: initialText + continued.text,
+      rounds: continued.rounds,
+      stillTruncated: continued.stillTruncated,
+    };
+  }
+
+  private static async autoContinueMultiFileSummary(
+    provider: ILlmProvider,
+    files: PdfFileInfo[],
+    prompt: string,
+    initialText: string,
+    options: LLMOptions,
+    onProgress?: ProgressCb,
+  ): Promise<{ text: string; rounds: number; stillTruncated: boolean }> {
+    if (typeof provider.generateMultiFileSummary !== "function") {
+      return {
+        text: initialText,
+        rounds: 0,
+        stillTruncated: isAutoContinuableTruncation(options.truncation),
+      };
+    }
+    let text = initialText;
+    let rounds = 0;
+    const maxRounds = this.getAutoContinuationRounds();
+    while (
+      rounds < maxRounds &&
+      isAutoContinuableTruncation(options.truncation)
+    ) {
+      throwIfAborted(options.abortSignal);
+      rounds += 1;
+      const continuationPrompt = `${this.buildContinuationPrompt(prompt)}\n\nPrevious response tail:\n${this.tailForContinuation(text)}`;
+      const continuation = await this.callProviderAndTrackTruncation(
+        options,
+        () =>
+          provider.generateMultiFileSummary!(
+            files,
+            continuationPrompt,
+            options,
+            onProgress,
+          ),
+      );
+      text += this.removeContinuationOverlap(text, continuation);
+    }
+    return {
+      text,
+      rounds,
+      stillTruncated: isAutoContinuableTruncation(options.truncation),
+    };
+  }
+
   private static async runGenerateWithEndpointRouting(
     request: LLMGenerateRequest,
     prompt: string,
@@ -700,11 +943,27 @@ export class LLMService {
         );
       }
       try {
-        text = await provider.generateMultiFileSummary(
+        text = await this.callProviderAndTrackTruncation(options, () =>
+          provider.generateMultiFileSummary!(
+            resolved.files,
+            prompt,
+            options,
+            progressProxy,
+          ),
+        );
+        const continued = await this.autoContinueMultiFileSummary(
+          provider,
           resolved.files,
           prompt,
+          text,
           options,
           progressProxy,
+        );
+        text = continued.text;
+        this.appendAutoContinuationWarning(
+          warnings,
+          continued.rounds,
+          continued.stillTruncated,
         );
       } catch (error: unknown) {
         if (isAbortError(error, options.abortSignal)) {
@@ -714,12 +973,29 @@ export class LLMService {
       }
     } else {
       try {
-        text = await provider.generateSummary(
+        text = await this.callProviderAndTrackTruncation(options, () =>
+          provider.generateSummary(
+            resolved.content,
+            resolved.isBase64,
+            prompt,
+            options,
+            progressProxy,
+          ),
+        );
+        const continued = await this.autoContinueSummaryText(
+          provider,
           resolved.content,
           resolved.isBase64,
           prompt,
+          text,
           options,
           progressProxy,
+        );
+        text = continued.text;
+        this.appendAutoContinuationWarning(
+          warnings,
+          continued.rounds,
+          continued.stillTruncated,
         );
       } catch (error: unknown) {
         if (isAbortError(error, options.abortSignal)) {
@@ -891,12 +1167,29 @@ export class LLMService {
     });
     let text: string;
     try {
-      text = await provider.chat(
+      text = await this.callProviderAndTrackTruncation(options, () =>
+        provider.chat(
+          resolved.content,
+          resolved.isBase64,
+          request.conversation,
+          options,
+          progressProxy,
+        ),
+      );
+      const continued = await this.autoContinueChatText(
+        provider,
         resolved.content,
         resolved.isBase64,
         request.conversation,
+        text,
         options,
         progressProxy,
+      );
+      text = continued.text;
+      this.appendAutoContinuationWarning(
+        warnings,
+        continued.rounds,
+        continued.stillTruncated,
       );
     } catch (error: unknown) {
       if (isAbortError(error, options.abortSignal)) {

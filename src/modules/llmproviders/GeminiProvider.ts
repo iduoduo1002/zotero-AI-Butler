@@ -24,6 +24,7 @@ import {
   normalizeAbortError,
   throwIfAborted,
 } from "./shared/requestAbort";
+import { recordFinishReason } from "./shared/truncation";
 import {
   providerHttpRequestFailed,
   providerMissingApiKey,
@@ -168,6 +169,12 @@ export class GeminiProvider implements ILlmProvider {
                   if (!jsonStr) continue;
                   try {
                     const json = JSON.parse(jsonStr);
+                    recordFinishReason(
+                      options,
+                      "google",
+                      "candidates.finishReason",
+                      json?.candidates?.[0]?.finishReason,
+                    );
                     const text = this.extractGeminiText(json);
                     if (text) {
                       gotAnyDelta = true;
@@ -364,6 +371,12 @@ export class GeminiProvider implements ILlmProvider {
 
                   try {
                     const json = JSON.parse(jsonStr);
+                    recordFinishReason(
+                      options,
+                      "google",
+                      "candidates.finishReason",
+                      json?.candidates?.[0]?.finishReason,
+                    );
                     const text = this.extractGeminiText(json);
                     if (text) {
                       gotAnyDelta = true;
@@ -866,6 +879,12 @@ export class GeminiProvider implements ILlmProvider {
                   if (!jsonStr) continue;
                   try {
                     const json = JSON.parse(jsonStr);
+                    recordFinishReason(
+                      options,
+                      "google",
+                      "candidates.finishReason",
+                      json?.candidates?.[0]?.finishReason,
+                    );
                     const text = this.extractGeminiText(json);
                     if (text) {
                       gotAnyDelta = true;
