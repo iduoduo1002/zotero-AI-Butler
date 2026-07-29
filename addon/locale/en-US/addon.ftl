@@ -20,6 +20,11 @@ itempane-ai-no-item = Please select an item
 library-toolbar-ai-butler = AI Butler
 
 # Item pane sidebar
+itempane-tab-summary = Summary
+itempane-tab-chat = Chat
+itempane-tab-deep-read = Deep Read
+itempane-tab-quick-read = Quick Read
+itempane-no-enabled-tabs = No AI Butler sidebar tabs are enabled
 itempane-refresh-tooltip = Refresh AI Butler sidebar
 itempane-table-title = Table Summary
 itempane-table-badge-filled = Table filled
