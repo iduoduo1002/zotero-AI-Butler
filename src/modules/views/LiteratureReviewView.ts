@@ -2048,8 +2048,7 @@ export class LiteratureReviewView extends BaseView {
 
     try {
       const savedReview = Zotero.Prefs.get(REVIEW_PRESETS_PREF_KEY, true) as
-        | string
-        | undefined;
+        string | undefined;
       this.reviewPresets = this.normalizePresets(
         savedReview ? JSON.parse(savedReview) : null,
         getString("literature-review-review-preset-prefix"),
@@ -2064,8 +2063,7 @@ export class LiteratureReviewView extends BaseView {
 
     try {
       const savedTable = Zotero.Prefs.get(TABLE_PRESETS_PREF_KEY, true) as
-        | string
-        | undefined;
+        string | undefined;
       this.tablePresets = this.normalizePresets(
         savedTable ? JSON.parse(savedTable) : null,
         getString("literature-review-table-preset-prefix"),

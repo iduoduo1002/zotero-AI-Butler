@@ -30,10 +30,7 @@ import {
 
 export type ImageSummaryRequestMode = "gemini" | "openai";
 export type ImageSummaryCustomHeadersInput =
-  | string
-  | Record<string, unknown>
-  | null
-  | undefined;
+  string | Record<string, unknown> | null | undefined;
 
 const DEFAULT_IMAGE_SUMMARY_REQUEST_TIMEOUT_SECONDS = 600;
 const MIN_IMAGE_SUMMARY_REQUEST_TIMEOUT_SECONDS = 30;

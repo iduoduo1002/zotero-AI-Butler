@@ -238,7 +238,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -475,7 +475,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         message: errorMessage,
       });
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -945,7 +945,7 @@ export class VolcanoArkProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }

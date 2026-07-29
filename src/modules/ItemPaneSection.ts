@@ -14,7 +14,6 @@ import { config } from "../../package.json";
 import { getString, getLocaleID } from "../utils/locale";
 import { getPref, setPref } from "../utils/prefs";
 import {
-  getSidebarModuleOrder,
   isTableFeatureEnabled,
   isSidebarModuleEnabled,
   type SidebarModuleId,
@@ -93,12 +92,19 @@ const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
   box-sizing: border-box;
 }
 .ai-butler-note-section,
+.ai-butler-note-page,
 .ai-butler-note-content-wrapper,
 .ai-butler-note-content {
+  inline-size: 100%;
+  min-inline-size: 0;
+  max-inline-size: 100%;
   min-width: 0;
   max-width: 100%;
+  contain: inline-size;
 }
-.ai-butler-note-content,
+.ai-butler-note-content {
+  overflow-x: hidden !important;
+}
 .ai-butler-note-content p,
 .ai-butler-note-content li,
 .ai-butler-note-content blockquote,
@@ -110,6 +116,8 @@ const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
 .ai-butler-note-content h6,
 .ai-butler-note-content td,
 .ai-butler-note-content th {
+  min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -121,19 +129,65 @@ const SIDEBAR_NOTE_OVERFLOW_GUARD_CSS = `
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.ai-butler-note-content pre,
-.ai-butler-note-content table,
-.ai-butler-note-content .katex-display,
-.ai-butler-note-content .katex-scroll-container {
-  max-width: 100%;
+.ai-butler-note-content pre {
   overflow-x: auto;
   overflow-y: hidden;
 }
 .ai-butler-note-content table {
-  display: block;
-  width: max-content;
+  display: table;
+  inline-size: 100%;
+  width: 100%;
+  max-inline-size: 100%;
   max-width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
+  overflow-wrap: anywhere;
+}
+.ai-butler-note-content th,
+.ai-butler-note-content td {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  vertical-align: top;
+}
+.ai-butler-note-content .katex-scroll-container,
+.ai-butler-note-content .katex-display {
+  display: block !important;
+  inline-size: 100% !important;
+  width: 100% !important;
+  min-inline-size: 0 !important;
+  min-width: 0 !important;
+  max-inline-size: 100% !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  overscroll-behavior-inline: contain;
+  contain: inline-size;
+}
+.ai-butler-note-content .katex-display {
+  margin: 0.65em 0;
+  padding-bottom: 0.15em;
+  text-align: left;
+}
+.ai-butler-note-content .katex-scroll-container > .katex-display {
+  margin: 0;
+}
+.ai-butler-note-content .katex-display > .katex,
+.ai-butler-note-content .katex-scroll-container .katex {
+  display: inline-block !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+}
+.ai-butler-note-content .katex-inline {
+  display: inline-block;
+  min-inline-size: 0;
+  min-width: 0;
+  max-inline-size: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: middle;
 }
 .ai-butler-note-content img,
 .ai-butler-note-content svg,
@@ -160,11 +214,7 @@ let currentChatState: ChatState = {
 };
 
 type SidebarAutoRefreshTarget =
-  | "summary"
-  | "deepRead"
-  | "imageSummary"
-  | "mindmap"
-  | "table";
+  "summary" | "deepRead" | "imageSummary" | "mindmap" | "table";
 
 let sidebarContext: {
   doc: Document;
@@ -201,7 +251,53 @@ let sidebarNoteEditState: SidebarNoteEditState | null = null;
 const pendingSidebarRefreshTargets = new Set<SidebarAutoRefreshTarget>();
 const quickChatToggleListeners = new WeakMap<HTMLElement, EventListener>();
 const sidebarNoteEditEventCleanups = new WeakMap<HTMLElement, () => void>();
+const sidebarWorkspaceResizeObservers = new WeakMap<
+  HTMLElement,
+  ResizeObserver
+>();
+const sidebarWorkspaceMenuCleanups = new WeakMap<HTMLElement, () => void>();
 const SIDEBAR_SUMMARY_SELECTION_PREF = "sidebarSelectedSummaryBlockIds" as any;
+
+type SidebarTabId = "summary" | "chat" | "deepRead" | "quickRead";
+
+type SidebarTabDefinition = {
+  id: SidebarTabId;
+  labelKey: string;
+  icon: string;
+  isAvailable: () => boolean;
+};
+
+const SIDEBAR_TAB_DEFINITIONS: SidebarTabDefinition[] = [
+  {
+    id: "summary",
+    labelKey: "itempane-tab-summary",
+    icon: "✦",
+    isAvailable: () => isSidebarModuleEnabled("note"),
+  },
+  {
+    id: "chat",
+    labelKey: "itempane-tab-chat",
+    icon: "◌",
+    isAvailable: () =>
+      isSidebarModuleEnabled("actionButtons") ||
+      isSidebarModuleEnabled("quickChat"),
+  },
+  {
+    id: "deepRead",
+    labelKey: "itempane-tab-deep-read",
+    icon: "◇",
+    isAvailable: () => isSidebarModuleEnabled("deepRead"),
+  },
+  {
+    id: "quickRead",
+    labelKey: "itempane-tab-quick-read",
+    icon: "⌁",
+    isAvailable: () =>
+      isSidebarModuleEnabled("table") ||
+      isSidebarModuleEnabled("mindmap") ||
+      isSidebarModuleEnabled("imageSummary"),
+  },
+];
 
 function setSidebarContext(doc: Document, item: Zotero.Item | null): void {
   sidebarContext = item
@@ -600,7 +696,10 @@ async function runSidebarRefresh(): Promise<void> {
 
   let item: Zotero.Item = sidebarContext.item;
   try {
-    item = await Zotero.Items.getAsync(itemId);
+    const refreshedItem = await Zotero.Items.getAsync(itemId);
+    if (refreshedItem) {
+      item = refreshedItem;
+    }
   } catch {
     // ignore and use cached item instance
   }
@@ -763,7 +862,10 @@ export async function refreshCurrentItemPaneSection(): Promise<void> {
 
   let item = sidebarRenderContext.item;
   try {
-    item = await Zotero.Items.getAsync(itemId);
+    const refreshedItem = await Zotero.Items.getAsync(itemId);
+    if (refreshedItem) {
+      item = refreshedItem;
+    }
   } catch {
     // 使用缓存的 item 继续刷新
   }
@@ -780,6 +882,7 @@ function renderItemPaneSection(
   item: Zotero.Item,
   handleOpenAIChat: (itemId: number) => Promise<void>,
 ): void {
+  cleanupSidebarWorkspace(body);
   body.innerHTML = "";
   const doc = body.ownerDocument;
 
@@ -789,14 +892,18 @@ function renderItemPaneSection(
     return;
   }
 
-  // 容器样式
+  ensureSidebarWorkspaceStyles(doc);
+
   body.style.cssText = `
-    padding: 10px;
-    font-family: system-ui, -apple-system, sans-serif;
+    padding: 0;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-size: 13px;
     width: 100%;
     max-width: 100%;
-    overflow-x: auto;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
     box-sizing: border-box;
   `;
 
@@ -806,12 +913,7 @@ function renderItemPaneSection(
     sidebarRenderContext = null;
     sidebarNoteEditState = null;
     const hint = doc.createElement("div");
-    hint.style.cssText = `
-      color: #9e9e9e;
-      font-size: 12px;
-      text-align: center;
-      padding: 12px;
-    `;
+    hint.className = "ai-butler-sidebar-empty";
     hint.textContent = getString("itempane-ai-no-item");
     body.appendChild(hint);
     return;
@@ -849,23 +951,799 @@ function renderItemPaneSection(
     };
   }
 
-  // 按用户配置的顺序渲染侧边栏功能区块
-  const renderers: Record<SidebarModuleId, () => void> = {
-    actionButtons: () => renderActionButtons(body, doc, item, handleOpenAIChat),
-    note: () => renderNoteSection(body, doc, item, "summary"),
-    deepRead: () => renderNoteSection(body, doc, item, "deepRead"),
-    table: () => renderTableSection(body, doc, item),
-    imageSummary: () => renderImageSummarySection(body, doc, item),
-    mindmap: () => renderMindmapSection(body, doc, item),
-    quickChat: () =>
-      renderChatArea(body, doc, item, !isSidebarModuleEnabled("actionButtons")),
+  const tabs = getAvailableSidebarTabs();
+  if (tabs.length === 0) {
+    const hint = doc.createElement("div");
+    hint.className = "ai-butler-sidebar-empty";
+    hint.textContent = getString("itempane-no-enabled-tabs");
+    body.appendChild(hint);
+    return;
+  }
+
+  const shell = doc.createElement("div");
+  shell.className = "ai-butler-sidebar-shell";
+
+  const header = doc.createElement("div");
+  header.className = "ai-butler-sidebar-topbar";
+
+  const titleWrap = doc.createElement("div");
+  titleWrap.className = "ai-butler-sidebar-title-wrap";
+
+  const eyebrow = doc.createElement("div");
+  eyebrow.className = "ai-butler-sidebar-eyebrow";
+  eyebrow.textContent = getString("aibutler-itempane-ai-section-header");
+
+  const itemTitle = doc.createElement("div");
+  itemTitle.className = "ai-butler-sidebar-item-title";
+  itemTitle.textContent = getSidebarItemTitle(item);
+  itemTitle.title = getSidebarItemTitle(item);
+
+  titleWrap.appendChild(eyebrow);
+  titleWrap.appendChild(itemTitle);
+
+  const refreshBtn = doc.createElement("button");
+  refreshBtn.type = "button";
+  refreshBtn.className =
+    "ai-butler-sidebar-icon-button ai-butler-sidebar-refresh";
+  refreshBtn.title = getString("itempane-refresh-tooltip");
+  refreshBtn.textContent = "↻";
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.textContent = "…";
+    refreshBtn.disabled = true;
+    try {
+      await refreshCurrentItemPaneSection();
+    } catch (err: any) {
+      ztoolkit.log("[AI-Butler] 重新渲染侧边栏失败:", err);
+    } finally {
+      refreshBtn.textContent = "↻";
+      refreshBtn.disabled = false;
+    }
+  });
+
+  header.appendChild(titleWrap);
+  header.appendChild(refreshBtn);
+
+  const nav = doc.createElement("div");
+  nav.className = "ai-butler-sidebar-tabs";
+  nav.setAttribute("role", "tablist");
+
+  const tabButtons = new Map<SidebarTabId, HTMLButtonElement>();
+  const panels = new Map<SidebarTabId, HTMLElement>();
+  const overflowMenuItems = new Map<SidebarTabId, HTMLButtonElement>();
+
+  const moreWrap = doc.createElement("div");
+  moreWrap.className = "ai-butler-sidebar-more-wrap";
+
+  const moreBtn = doc.createElement("button");
+  moreBtn.type = "button";
+  moreBtn.className = "ai-butler-sidebar-tab ai-butler-sidebar-more";
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", "false");
+  moreBtn.textContent = "…";
+
+  const moreMenu = doc.createElement("div");
+  moreMenu.className = "ai-butler-sidebar-more-menu";
+  moreMenu.setAttribute("role", "menu");
+  moreMenu.style.display = "none";
+
+  moreWrap.appendChild(moreBtn);
+  moreWrap.appendChild(moreMenu);
+
+  const content = doc.createElement("div");
+  content.className = "ai-butler-sidebar-content";
+
+  const preferredActiveTab = String(
+    (getPref("sidebarActiveTab" as any) as string) || "",
+  ) as SidebarTabId;
+  let activeTab = tabs.some((tab) => tab.id === preferredActiveTab)
+    ? preferredActiveTab
+    : tabs[0].id;
+
+  const activateTab = (tabId: SidebarTabId): void => {
+    if (!panels.has(tabId)) return;
+    activeTab = tabId;
+    setPref("sidebarActiveTab" as any, activeTab as any);
+
+    for (const tab of tabs) {
+      const isActive = tab.id === activeTab;
+      const button = tabButtons.get(tab.id);
+      const menuItem = overflowMenuItems.get(tab.id);
+      const panel = panels.get(tab.id);
+
+      if (button) {
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-selected", isActive ? "true" : "false");
+      }
+      if (menuItem) {
+        menuItem.classList.toggle("is-active", isActive);
+      }
+      if (panel) {
+        panel.style.display = isActive ? "flex" : "none";
+        panel.setAttribute("aria-hidden", isActive ? "false" : "true");
+      }
+    }
+    applySidebarTabOverflow(nav, tabs, tabButtons, overflowMenuItems, moreWrap);
   };
 
-  for (const moduleId of getSidebarModuleOrder()) {
-    if (isSidebarModuleEnabled(moduleId)) {
-      renderers[moduleId]();
+  for (const tab of tabs) {
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = "ai-butler-sidebar-tab";
+    button.dataset.tabId = tab.id;
+    button.setAttribute("role", "tab");
+    button.setAttribute(
+      "aria-selected",
+      tab.id === activeTab ? "true" : "false",
+    );
+    button.title = getSidebarTabLabel(tab);
+    button.innerHTML = `<span class="ai-butler-sidebar-tab-label">${escapeHtmlForChat(getSidebarTabLabel(tab))}</span>`;
+    button.addEventListener("click", () => activateTab(tab.id));
+    tabButtons.set(tab.id, button);
+    nav.appendChild(button);
+
+    const menuItem = doc.createElement("button");
+    menuItem.type = "button";
+    menuItem.className = "ai-butler-sidebar-more-item";
+    menuItem.setAttribute("role", "menuitem");
+    menuItem.textContent = `${tab.icon} ${getSidebarTabLabel(tab)}`;
+    menuItem.addEventListener("click", () => {
+      moreMenu.style.display = "none";
+      moreBtn.setAttribute("aria-expanded", "false");
+      activateTab(tab.id);
+    });
+    overflowMenuItems.set(tab.id, menuItem);
+    moreMenu.appendChild(menuItem);
+  }
+
+  nav.appendChild(moreWrap);
+
+  moreBtn.addEventListener("click", (event: Event) => {
+    event.stopPropagation();
+    const willOpen = moreMenu.style.display === "none";
+    moreMenu.style.display = willOpen ? "block" : "none";
+    moreBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+
+  const closeMenu = (event: Event): void => {
+    if (moreWrap.contains(event.target as Node)) return;
+    moreMenu.style.display = "none";
+    moreBtn.setAttribute("aria-expanded", "false");
+  };
+  doc.addEventListener("click", closeMenu);
+
+  const relayoutSidebar = (): void => {
+    fitSidebarShellToViewport(body, shell);
+    applySidebarTabOverflow(nav, tabs, tabButtons, overflowMenuItems, moreWrap);
+  };
+  doc.defaultView?.addEventListener("resize", relayoutSidebar);
+  doc.defaultView?.top?.addEventListener("resize", relayoutSidebar);
+  sidebarWorkspaceMenuCleanups.set(body, () => {
+    doc.removeEventListener("click", closeMenu);
+    doc.defaultView?.removeEventListener("resize", relayoutSidebar);
+    doc.defaultView?.top?.removeEventListener("resize", relayoutSidebar);
+  });
+
+  for (const tab of tabs) {
+    const panel = doc.createElement("div");
+    panel.className = "ai-butler-sidebar-tab-panel";
+    panel.dataset.tabId = tab.id;
+    panel.setAttribute("role", "tabpanel");
+    panel.style.display = tab.id === activeTab ? "flex" : "none";
+    panel.setAttribute("aria-hidden", tab.id === activeTab ? "false" : "true");
+    panels.set(tab.id, panel);
+    content.appendChild(panel);
+    renderSidebarTabPanel(tab.id, panel, doc, item, handleOpenAIChat);
+  }
+
+  nav.appendChild(refreshBtn);
+  shell.appendChild(nav);
+  shell.appendChild(content);
+  body.appendChild(shell);
+  bindSidebarWheelTrap(shell);
+
+  activateTab(activeTab);
+
+  const ResizeObserverCtor = doc.defaultView?.ResizeObserver;
+  if (ResizeObserverCtor) {
+    const observer = new ResizeObserverCtor(relayoutSidebar);
+    observer.observe(nav);
+    observer.observe(body);
+    if (body.parentElement) observer.observe(body.parentElement);
+    sidebarWorkspaceResizeObservers.set(body, observer);
+  }
+
+  doc.defaultView?.setTimeout(relayoutSidebar, 0);
+}
+
+function fitSidebarShellToViewport(
+  body: HTMLElement,
+  shell: HTMLElement,
+): void {
+  const doc = body.ownerDocument;
+  if (!doc) return;
+  const view = doc.defaultView;
+  if (!view) return;
+
+  const ownHeight = view.innerHeight || 0;
+  const topHeight = view.top?.innerHeight || 0;
+  const viewportHeight = Math.max(ownHeight, topHeight, 360);
+  const rect = body.getBoundingClientRect();
+  const bottomInset = 8;
+  const available = Math.floor(viewportHeight - rect.top - bottomInset);
+  const targetHeight = Math.max(320, available);
+
+  body.style.height = `${targetHeight}px`;
+  body.style.minHeight = `${targetHeight}px`;
+  shell.style.height = `${targetHeight}px`;
+  shell.style.minHeight = `${targetHeight}px`;
+  shell.style.maxHeight = `${targetHeight}px`;
+}
+
+function bindSidebarWheelTrap(shell: HTMLElement): void {
+  shell.addEventListener(
+    "wheel",
+    (event: WheelEvent) => {
+      const target = event.target as HTMLElement | null;
+      const scrollTarget = findSidebarWheelTarget(shell, target, event.deltaY);
+      if (scrollTarget) {
+        // Let the browser perform native scrolling to avoid scrollbar jitter,
+        // while preventing the event from reaching Zotero's outer item pane.
+        event.stopPropagation();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    { passive: false },
+  );
+}
+
+function findSidebarWheelTarget(
+  shell: HTMLElement,
+  target: HTMLElement | null,
+  deltaY: number,
+): HTMLElement | null {
+  let node: HTMLElement | null = target;
+  while (node && node !== shell) {
+    if (canElementScrollVertically(node, deltaY)) {
+      return node;
+    }
+    node = node.parentElement as HTMLElement | null;
+  }
+
+  const activePanel = shell.querySelector(
+    '.ai-butler-sidebar-tab-panel[aria-hidden="false"]',
+  ) as HTMLElement | null;
+  const candidates = [
+    activePanel?.querySelector(".ai-butler-note-content-wrapper"),
+    activePanel?.querySelector(".ai-butler-quick-chat-messages"),
+    activePanel,
+    shell.querySelector(".ai-butler-sidebar-content"),
+  ];
+
+  for (const candidate of candidates) {
+    const element = candidate as HTMLElement | null;
+    if (element && canElementScrollVertically(element, deltaY)) {
+      return element;
     }
   }
+  return null;
+}
+
+function canElementScrollVertically(
+  element: HTMLElement,
+  deltaY: number,
+): boolean {
+  if (element.scrollHeight <= element.clientHeight + 1) return false;
+  if (deltaY < 0) return element.scrollTop > 0;
+  if (deltaY > 0) {
+    return element.scrollTop + element.clientHeight < element.scrollHeight - 1;
+  }
+  return true;
+}
+
+function cleanupSidebarWorkspace(body: HTMLElement): void {
+  const previousObserver = sidebarWorkspaceResizeObservers.get(body);
+  if (previousObserver) {
+    previousObserver.disconnect();
+    sidebarWorkspaceResizeObservers.delete(body);
+  }
+
+  const previousMenuCleanup = sidebarWorkspaceMenuCleanups.get(body);
+  if (previousMenuCleanup) {
+    previousMenuCleanup();
+    sidebarWorkspaceMenuCleanups.delete(body);
+  }
+
+  const previousQuickChatToggleListener = quickChatToggleListeners.get(body);
+  if (previousQuickChatToggleListener) {
+    body.removeEventListener(
+      "ai-butler-toggle-inline-chat",
+      previousQuickChatToggleListener,
+    );
+    quickChatToggleListeners.delete(body);
+  }
+}
+
+function ensureSidebarWorkspaceStyles(doc: Document): void {
+  if (doc.getElementById("ai-butler-sidebar-workspace-styles")) return;
+
+  const style = doc.createElement("style");
+  style.id = "ai-butler-sidebar-workspace-styles";
+  style.textContent = `
+    .ai-butler-sidebar-shell,
+    .ai-butler-sidebar-shell * {
+      box-sizing: border-box;
+    }
+
+    .ai-butler-sidebar-shell {
+      --ai-butler-accent: #59c0bc;
+      --ai-butler-border: rgba(88, 166, 205, 0.16);
+      --ai-butler-soft-border: rgba(88, 166, 205, 0.1);
+      --ai-butler-muted: rgba(96, 108, 122, 0.72);
+      --ai-butler-surface: rgba(255, 255, 255, 0.78);
+      --ai-butler-surface-strong: rgba(242, 249, 253, 0.86);
+      --ai-butler-blue-bg: #f8fcff;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      border: 1px solid rgba(91, 174, 216, 0.16);
+      border-bottom-color: rgba(128, 128, 128, 0.12);
+      border-radius: 14px 14px 0 0;
+      background:
+        linear-gradient(180deg, rgba(240, 249, 255, 0.82), rgba(250, 253, 255, 0.78) 82px, rgba(255, 255, 255, 0.62)),
+        var(--ai-butler-blue-bg);
+      color: inherit;
+    }
+
+    .ai-butler-sidebar-topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      padding: 10px 10px 8px;
+      border-bottom: 1px solid var(--ai-butler-soft-border);
+      flex: 0 0 auto;
+    }
+
+    .ai-butler-sidebar-title-wrap {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    .ai-butler-sidebar-eyebrow {
+      font-size: 12px;
+      font-weight: 750;
+      line-height: 1.2;
+      letter-spacing: 0.01em;
+    }
+
+    .ai-butler-sidebar-item-title {
+      margin-top: 2px;
+      color: var(--ai-butler-muted);
+      font-size: 11px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ai-butler-sidebar-icon-button {
+      width: 28px;
+      height: 28px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--ai-butler-border);
+      border-radius: 9px;
+      background: rgba(128, 128, 128, 0.045);
+      color: inherit;
+      cursor: pointer;
+      font-size: 15px;
+      line-height: 1;
+      transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+    }
+
+    .ai-butler-sidebar-icon-button:hover {
+      background: rgba(89, 192, 188, 0.12);
+      border-color: rgba(89, 192, 188, 0.42);
+    }
+
+    .ai-butler-sidebar-icon-button:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+
+    .ai-butler-sidebar-refresh {
+      margin-left: auto;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .ai-butler-sidebar-tabs {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      width: 100%;
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(91, 174, 216, 0.12);
+      border-radius: 14px 14px 0 0;
+      background: rgba(247, 252, 255, 0.82);
+      overflow: visible;
+      flex: 0 0 auto;
+    }
+
+    .ai-butler-sidebar-tab {
+      min-width: max-content;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 30px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+      transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+    }
+
+    .ai-butler-sidebar-tab:hover,
+    .ai-butler-sidebar-tab.is-active {
+      background: rgba(89, 192, 188, 0.13);
+      border-color: rgba(89, 192, 188, 0.38);
+    }
+
+    .ai-butler-sidebar-tab.is-active {
+      color: var(--ai-butler-accent);
+      box-shadow: inset 0 0 0 1px rgba(89, 192, 188, 0.1);
+    }
+
+    .ai-butler-sidebar-tab-icon {
+      flex: 0 0 auto;
+      font-size: 11px;
+      opacity: 0.9;
+    }
+
+    .ai-butler-sidebar-tab-label {
+      min-width: max-content;
+      overflow: visible;
+      text-overflow: clip;
+    }
+
+    .ai-butler-sidebar-more-wrap {
+      position: relative;
+      display: none;
+      flex: 0 0 auto;
+      margin-left: 0;
+    }
+
+    .ai-butler-sidebar-more-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 20;
+      min-width: 116px;
+      padding: 5px;
+      border: 1px solid var(--ai-butler-border);
+      border-radius: 10px;
+      background: rgba(250, 250, 250, 0.98);
+      color: #1f2933;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+    }
+
+    .ai-butler-sidebar-more-item {
+      width: 100%;
+      display: none;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .ai-butler-sidebar-more-item:hover,
+    .ai-butler-sidebar-more-item.is-active {
+      background: rgba(89, 192, 188, 0.13);
+    }
+
+    .ai-butler-sidebar-content {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      max-width: 100%;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      padding: 0;
+      scrollbar-width: thin;
+    }
+
+    .ai-butler-sidebar-tab-panel {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      flex-direction: column;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      padding: 10px;
+    }
+
+    .ai-butler-sidebar-tab-panel > :first-child {
+      margin-top: 0 !important;
+    }
+
+    .ai-butler-sidebar-tab-panel > :last-child {
+      margin-bottom: 0 !important;
+    }
+
+    .ai-butler-sidebar-tab-panel[data-tab-id="chat"],
+    .ai-butler-sidebar-tab-panel[data-tab-id="quickRead"] {
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+    }
+
+    .ai-butler-sidebar-tab-panel[data-tab-id="summary"],
+    .ai-butler-sidebar-tab-panel[data-tab-id="deepRead"] {
+      padding: 0;
+    }
+
+    .ai-butler-sidebar-chat-entry {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 1px solid var(--ai-butler-border);
+      border-radius: 10px;
+      background: var(--ai-butler-surface);
+    }
+
+    .ai-butler-sidebar-chat-entry-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--ai-butler-muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .ai-butler-sidebar-empty {
+      min-height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      color: rgba(128, 128, 128, 0.85);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 260px) {
+      .ai-butler-sidebar-tab {
+        padding: 0 10px;
+      }
+      .ai-butler-sidebar-item-title {
+        display: none;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .ai-butler-sidebar-shell {
+        --ai-butler-accent: #71d7d2;
+        --ai-butler-border: rgba(112, 184, 214, 0.2);
+        --ai-butler-soft-border: rgba(112, 184, 214, 0.14);
+        --ai-butler-muted: rgba(203, 213, 225, 0.64);
+        --ai-butler-surface: rgba(15, 23, 42, 0.42);
+        --ai-butler-surface-strong: rgba(20, 34, 48, 0.62);
+        --ai-butler-blue-bg: #111820;
+        border-color: rgba(112, 184, 214, 0.18);
+        border-bottom-color: rgba(148, 163, 184, 0.12);
+        background:
+          linear-gradient(180deg, rgba(17, 33, 45, 0.72), rgba(15, 23, 42, 0.58) 86px, rgba(15, 23, 42, 0.38)),
+          var(--ai-butler-blue-bg);
+      }
+
+      .ai-butler-sidebar-tabs {
+        border-bottom-color: rgba(112, 184, 214, 0.14);
+        background: rgba(17, 31, 42, 0.78);
+      }
+
+      .ai-butler-sidebar-icon-button,
+      .ai-butler-sidebar-refresh {
+        background: rgba(15, 23, 42, 0.55);
+        border-color: rgba(148, 163, 184, 0.22);
+      }
+
+      .ai-butler-sidebar-more-menu {
+        background: rgba(24, 31, 39, 0.98);
+        color: #f3f4f6;
+      }
+    }
+  `;
+  const styleHost = doc.head || doc.documentElement;
+  if (styleHost) styleHost.appendChild(style);
+}
+
+function getAvailableSidebarTabs(): SidebarTabDefinition[] {
+  return SIDEBAR_TAB_DEFINITIONS.filter((tab) => tab.isAvailable());
+}
+
+function getSidebarTabLabel(tab: SidebarTabDefinition): string {
+  return getString(tab.labelKey);
+}
+
+function getSidebarItemTitle(item: Zotero.Item): string {
+  const title = String((item as any).getField?.("title") || "").trim();
+  return title || getString("summary-untitled-paper");
+}
+
+function applySidebarTabOverflow(
+  nav: HTMLElement,
+  tabs: SidebarTabDefinition[],
+  tabButtons: Map<SidebarTabId, HTMLButtonElement>,
+  overflowMenuItems: Map<SidebarTabId, HTMLButtonElement>,
+  moreWrap: HTMLElement,
+): void {
+  const visibleTabs = new Set<SidebarTabId>(tabs.map((tab) => tab.id));
+  const activeTab = tabs.find((tab) =>
+    tabButtons.get(tab.id)?.classList.contains("is-active"),
+  )?.id;
+
+  for (const tab of tabs) {
+    const button = tabButtons.get(tab.id);
+    const menuItem = overflowMenuItems.get(tab.id);
+    if (button) button.style.display = "inline-flex";
+    if (menuItem) menuItem.style.display = "none";
+  }
+  moreWrap.style.display = "none";
+
+  const fits = (): boolean => nav.scrollWidth <= nav.clientWidth + 1;
+  if (fits()) return;
+
+  moreWrap.style.display = "block";
+  const hidePriority: SidebarTabId[] = [
+    "deepRead",
+    "chat",
+    "summary",
+    "quickRead",
+  ];
+  const orderedTabs = hidePriority
+    .map((id) => tabs.find((tab) => tab.id === id))
+    .filter((tab): tab is SidebarTabDefinition => !!tab);
+
+  for (const tab of orderedTabs) {
+    if (fits()) break;
+    if (tab.id === activeTab && visibleTabs.size > 1) continue;
+    if (tab.id === "quickRead" && visibleTabs.size > 2) continue;
+    const button = tabButtons.get(tab.id);
+    const menuItem = overflowMenuItems.get(tab.id);
+    if (!button || !menuItem) continue;
+    button.style.display = "none";
+    menuItem.style.display = "flex";
+    visibleTabs.delete(tab.id);
+  }
+
+  if (!fits() && activeTab) {
+    for (const tab of orderedTabs) {
+      if (tab.id === activeTab) continue;
+      const button = tabButtons.get(tab.id);
+      const menuItem = overflowMenuItems.get(tab.id);
+      if (!button || button.style.display === "none") continue;
+      button.style.display = "none";
+      menuItem?.style.setProperty("display", "flex");
+      visibleTabs.delete(tab.id);
+      if (fits()) break;
+    }
+  }
+
+  const hasHiddenTabs = visibleTabs.size < tabs.length;
+  moreWrap.style.display = hasHiddenTabs ? "block" : "none";
+}
+
+function renderSidebarTabPanel(
+  tabId: SidebarTabId,
+  panel: HTMLElement,
+  doc: Document,
+  item: Zotero.Item,
+  handleOpenAIChat: (itemId: number) => Promise<void>,
+): void {
+  switch (tabId) {
+    case "summary":
+      renderNoteSection(panel, doc, item, "summary", { mode: "page" });
+      break;
+    case "chat":
+      if (isSidebarModuleEnabled("actionButtons")) {
+        renderFullChatEntry(panel, doc, item, handleOpenAIChat);
+      }
+      if (isSidebarModuleEnabled("quickChat")) {
+        renderChatArea(panel, doc, item, true, { mode: "page" });
+      }
+      break;
+    case "deepRead":
+      renderNoteSection(panel, doc, item, "deepRead", { mode: "page" });
+      break;
+    case "quickRead":
+      if (isSidebarModuleEnabled("table")) {
+        renderTableSection(panel, doc, item);
+      }
+      if (isSidebarModuleEnabled("mindmap")) {
+        renderMindmapSection(panel, doc, item);
+      }
+      if (isSidebarModuleEnabled("imageSummary")) {
+        renderImageSummarySection(panel, doc, item);
+      }
+      if (!panel.childElementCount) {
+        const hint = doc.createElement("div");
+        hint.className = "ai-butler-sidebar-empty";
+        hint.textContent = getString("itempane-no-enabled-tabs");
+        panel.appendChild(hint);
+      }
+      break;
+  }
+}
+
+function renderFullChatEntry(
+  body: HTMLElement,
+  doc: Document,
+  item: Zotero.Item,
+  handleOpenAIChat: (itemId: number) => Promise<void>,
+): void {
+  const entry = doc.createElement("div");
+  entry.className = "ai-butler-sidebar-chat-entry";
+
+  const meta = doc.createElement("div");
+  meta.className = "ai-butler-sidebar-chat-entry-title";
+  const metaText = doc.createElement("span");
+  metaText.textContent = getString("itempane-ai-open-chat-tooltip");
+  meta.appendChild(metaText);
+
+  const fullChatBtn = createButton(
+    doc,
+    getString("itempane-ai-open-chat"),
+    true,
+  );
+  fullChatBtn.style.flex = "0 0 auto";
+  fullChatBtn.addEventListener("click", async () => {
+    try {
+      await handleOpenAIChat(item.id);
+    } catch (error: any) {
+      ztoolkit.log("[AI-Butler] 完整追问按钮点击失败:", error);
+    }
+  });
+
+  entry.appendChild(meta);
+  entry.appendChild(fullChatBtn);
+  body.appendChild(entry);
 }
 
 /**
@@ -1067,6 +1945,10 @@ function renderActionButtons(
   body.appendChild(btnContainer);
 }
 
+type SidebarNoteRenderOptions = {
+  mode?: "card" | "page";
+};
+
 /**
  * 渲染 AI 笔记区域
  */
@@ -1075,10 +1957,25 @@ function renderNoteSection(
   doc: Document,
   item: Zotero.Item,
   noteKind: AiNoteKind = "summary",
+  options: SidebarNoteRenderOptions = {},
 ): void {
+  const isPageMode = options.mode === "page";
   const noteSection = doc.createElement("div");
-  noteSection.className = "ai-butler-note-section";
-  noteSection.style.cssText = `
+  noteSection.className = isPageMode
+    ? "ai-butler-note-section ai-butler-note-page"
+    : "ai-butler-note-section";
+  noteSection.style.cssText = isPageMode
+    ? `
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  `
+    : `
     margin-bottom: 12px;
     border: 1px solid #e0e0e0;
     border-radius: 6px;
@@ -1091,7 +1988,24 @@ function renderNoteSection(
   // 笔记标题栏（可折叠）- 使用继承颜色以支持暗色模式
   const noteHeader = doc.createElement("div");
   noteHeader.className = "ai-butler-note-header";
-  noteHeader.style.cssText = `
+  noteHeader.style.cssText = isPageMode
+    ? `
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px 10px;
+    background: rgba(128, 128, 128, 0.035);
+    cursor: default;
+    user-select: none;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    overflow: visible;
+  `
+    : `
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -1120,7 +2034,9 @@ function renderNoteSection(
     overflow-wrap: anywhere;
   `;
   const noteLabel = getSidebarNoteKindLabel(noteKind);
-  noteTitle.innerHTML = `📄 <span>${noteLabel}</span>`;
+  noteTitle.innerHTML = isPageMode
+    ? `<span>${noteLabel}</span>`
+    : `📄 <span>${noteLabel}</span>`;
 
   const headerTopRow = doc.createElement("div");
   headerTopRow.style.cssText = `
@@ -1184,15 +2100,19 @@ function renderNoteSection(
   );
   metadataMenu.style.cssText = `
     display: none;
-    margin: 6px 8px 0;
-    max-height: 240px;
+    margin: 6px 8px 8px;
+    min-height: 52px;
+    max-height: min(280px, 42vh);
     overflow-y: auto;
-    padding: 6px;
-    border: 1px solid rgba(128, 128, 128, 0.22);
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.92);
+    overflow-x: hidden;
+    padding: 8px;
+    border: 1px solid rgba(89, 192, 188, 0.22);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.96);
     color: inherit;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.1);
+    flex: 0 0 auto;
+    z-index: 4;
   `;
 
   metadataButton.addEventListener("click", (e: Event) => {
@@ -1272,7 +2192,19 @@ function renderNoteSection(
   // 笔记内容区域
   const noteContentWrapper = doc.createElement("div");
   noteContentWrapper.className = "ai-butler-note-content-wrapper";
-  noteContentWrapper.style.cssText = `
+  noteContentWrapper.style.cssText = isPageMode
+    ? `
+    position: relative;
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+  `
+    : `
     position: relative;
     height: ${savedNoteHeight}px;
     min-height: 50px;
@@ -1289,8 +2221,8 @@ function renderNoteSection(
   noteContent.id = getSidebarNoteElementId("ai-butler-note-content", noteKind);
   noteContent.dataset.aiNoteKind = noteKind;
   noteContent.style.cssText = `
-    padding: 10px;
-    padding-bottom: 20px;
+    padding: ${isPageMode ? "14px 12px 28px" : "10px"};
+    padding-bottom: ${isPageMode ? "28px" : "20px"};
     font-size: ${currentFontSize}px;
     line-height: 1.6;
     overflow-wrap: anywhere;
@@ -1645,7 +2577,9 @@ function renderNoteSection(
 
   headerTopRow.appendChild(noteTitle);
   headerTopRow.appendChild(mainControls);
-  headerTopRow.appendChild(toggleIcon);
+  if (!isPageMode) {
+    headerTopRow.appendChild(toggleIcon);
+  }
   noteHeader.appendChild(headerTopRow);
   noteHeader.appendChild(personalizationRow);
 
@@ -1658,52 +2592,58 @@ function renderNoteSection(
     noteHeightPrefKey,
   );
 
-  // 折叠/展开功能 - 从首选项读取初始状态
-  let isCollapsed = getPref(noteCollapsedPrefKey as any) === true;
-
-  // 根据初始状态设置UI
-  if (isCollapsed) {
-    noteContentWrapper.style.height = "0px";
-    noteContentWrapper.style.overflow = "hidden";
+  if (isPageMode) {
     resizeHandle.style.display = "none";
-    toggleIcon.style.transform = "rotate(-90deg)";
-  }
+  } else {
+    // 折叠/展开功能 - 从首选项读取初始状态
+    let isCollapsed = getPref(noteCollapsedPrefKey as any) === true;
 
-  noteHeader.addEventListener("click", () => {
-    if (isSidebarNoteEditing(item.id)) {
-      setSidebarNoteEditStatus(
-        doc,
-        getString("itempane-note-editing-save-or-cancel"),
-        undefined,
-        noteKind,
-      );
-      return;
-    }
-    isCollapsed = !isCollapsed;
-    // 保存折叠状态到首选项
-    setPref(noteCollapsedPrefKey as any, isCollapsed as any);
+    // 根据初始状态设置UI
     if (isCollapsed) {
       noteContentWrapper.style.height = "0px";
       noteContentWrapper.style.overflow = "hidden";
       resizeHandle.style.display = "none";
       toggleIcon.style.transform = "rotate(-90deg)";
-    } else {
-      const restoreHeight = parseInt(
-        (getPref(noteHeightPrefKey as any) as string) ||
-          String(DEFAULT_NOTE_HEIGHT),
-        10,
-      );
-      noteContentWrapper.style.height = `${restoreHeight}px`;
-      noteContentWrapper.style.overflowY = "auto";
-      resizeHandle.style.display = "flex";
-      toggleIcon.style.transform = "rotate(0deg)";
     }
-  });
+
+    noteHeader.addEventListener("click", () => {
+      if (isSidebarNoteEditing(item.id)) {
+        setSidebarNoteEditStatus(
+          doc,
+          getString("itempane-note-editing-save-or-cancel"),
+          undefined,
+          noteKind,
+        );
+        return;
+      }
+      isCollapsed = !isCollapsed;
+      // 保存折叠状态到首选项
+      setPref(noteCollapsedPrefKey as any, isCollapsed as any);
+      if (isCollapsed) {
+        noteContentWrapper.style.height = "0px";
+        noteContentWrapper.style.overflow = "hidden";
+        resizeHandle.style.display = "none";
+        toggleIcon.style.transform = "rotate(-90deg)";
+      } else {
+        const restoreHeight = parseInt(
+          (getPref(noteHeightPrefKey as any) as string) ||
+            String(DEFAULT_NOTE_HEIGHT),
+          10,
+        );
+        noteContentWrapper.style.height = `${restoreHeight}px`;
+        noteContentWrapper.style.overflowY = "auto";
+        resizeHandle.style.display = "flex";
+        toggleIcon.style.transform = "rotate(0deg)";
+      }
+    });
+  }
 
   noteSection.appendChild(noteHeader);
   noteSection.appendChild(metadataMenu);
   noteSection.appendChild(noteContentWrapper);
-  noteSection.appendChild(resizeHandle);
+  if (!isPageMode) {
+    noteSection.appendChild(resizeHandle);
+  }
   body.appendChild(noteSection);
 
   updateSidebarNoteEditControls(doc, "missing", "", undefined, noteKind);
@@ -2897,7 +3837,9 @@ function renderChatArea(
   doc: Document,
   item: Zotero.Item,
   initiallyVisible = false,
+  options: { mode?: "card" | "page" } = {},
 ): void {
+  const isPageMode = options.mode === "page";
   currentChatState.abortController?.abort(
     getString("itempane-quick-chat-abort-refreshed"),
   );
@@ -2922,12 +3864,13 @@ function renderChatArea(
     max-inline-size: 100%;
     min-width: 0;
     min-inline-size: 0;
+    ${isPageMode ? "height: 100%; min-height: 0; flex: 1 1 auto;" : ""}
     contain: inline-size;
-    border: 1px solid rgba(128, 128, 128, 0.3);
-    border-radius: 6px;
+    border: 1px solid rgba(89, 192, 188, 0.22);
+    border-radius: 10px;
     overflow: hidden;
-    background: transparent;
-    margin-bottom: 12px;
+    background: rgba(255, 255, 255, 0.72);
+    margin-bottom: ${isPageMode ? "0" : "12px"};
   `;
 
   const chatHeader = doc.createElement("div");
@@ -3042,8 +3985,10 @@ function renderChatArea(
 
   // 消息显示区
   const messagesArea = doc.createElement("div");
+  messagesArea.className = "ai-butler-quick-chat-messages";
   messagesArea.style.cssText = `
-    height: ${currentQuickChatHeight}px;
+    height: ${isPageMode ? "auto" : `${currentQuickChatHeight}px`};
+    ${isPageMode ? "flex: 1 1 auto;" : ""}
     width: 100%;
     inline-size: 100%;
     max-width: 100%;
@@ -3051,8 +3996,8 @@ function renderChatArea(
     min-width: 0;
     min-inline-size: 0;
     contain: inline-size;
-    min-height: 100px;
-    max-height: 520px;
+    min-height: ${isPageMode ? "0" : "100px"};
+    max-height: ${isPageMode ? "none" : "520px"};
     overflow-y: auto;
     overflow-x: hidden;
     padding: 8px;
@@ -3578,7 +4523,10 @@ function renderChatArea(
   inputArea.appendChild(composer);
   chatArea.appendChild(chatHeader);
   chatArea.appendChild(messagesArea);
-  chatArea.appendChild(quickChatResizeHandle);
+  if (!isPageMode) {
+    chatArea.appendChild(quickChatResizeHandle);
+  }
+  inputArea.style.flex = "0 0 auto";
   chatArea.appendChild(inputArea);
   body.appendChild(chatArea);
 
@@ -4134,7 +5082,7 @@ async function confirmQuickChatNewConversation(
       color: white;
       cursor: pointer;
       font-size: 12px;
-      font-weight: 650;
+      font-weight: 700;
     `;
     confirmBtn.addEventListener("click", () =>
       finish(true, dontRemindCheckbox.checked),
@@ -5248,18 +6196,19 @@ async function loadNoteContent(
           itemButton.title = tooltip;
           itemButton.style.cssText = `
             display: grid;
-            grid-template-columns: auto 1fr;
-            column-gap: 8px;
+            grid-template-columns: auto minmax(0, 1fr);
+            column-gap: 10px;
             align-items: center;
             width: 100%;
-            padding: 6px 8px;
+            min-height: 38px;
+            padding: 8px 10px;
             border: 0;
-            border-radius: 6px;
+            border-radius: 8px;
             background: ${index === selectedBlockIndex ? "rgba(89, 192, 188, 0.14)" : "transparent"};
             color: inherit;
             cursor: pointer;
             font-size: 12px;
-            line-height: 1.35;
+            line-height: 1.45;
             text-align: left;
           `;
 
@@ -5267,7 +6216,8 @@ async function loadNoteContent(
           countLine.textContent = `${index + 1}/${summaryBlocks.length}`;
           countLine.style.cssText = `
             min-width: 32px;
-            font-weight: 700;
+            font-weight: 800;
+            line-height: 1.45;
             color: #59c0bc;
           `;
           const labelLine = doc.createElement("span");
@@ -5277,7 +6227,8 @@ async function loadNoteContent(
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            opacity: 0.82;
+            line-height: 1.45;
+            opacity: 0.86;
           `;
           itemButton.appendChild(countLine);
           itemButton.appendChild(labelLine);
@@ -5391,7 +6342,7 @@ async function loadNoteContent(
               trust: true,
               strict: false,
             });
-            return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+            return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
           } catch {
             return `<code>${innerContent}</code>`;
           }
@@ -5433,12 +6384,9 @@ async function loadNoteContent(
 
           if (isBlock) {
             // Removing delimiters
-            let latex = "";
-            if (isDoubleDollar) {
-              latex = trimmed.slice(2, -2);
-            } else {
-              latex = trimmed.slice(1, -1);
-            }
+            const latex = isDoubleDollar
+              ? trimmed.slice(2, -2)
+              : trimmed.slice(1, -1);
 
             try {
               const rendered = katex.renderToString(cleanLatex(latex), {
@@ -5448,7 +6396,7 @@ async function loadNoteContent(
                 trust: true,
                 strict: false,
               });
-              return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+              return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
             } catch {
               return `<code>${innerContent}</code>`;
             }
@@ -5464,7 +6412,7 @@ async function loadNoteContent(
                 strict: false,
               });
               if (isTaggedDisplay) {
-                return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+                return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
               }
               return `<span class="katex-inline">${rendered}</span>`;
             } catch {
@@ -5492,7 +6440,7 @@ async function loadNoteContent(
                 strict: false,
               },
             );
-            return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+            return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
           } catch {
             // Render failed, escape the formula for safe display
             const escaped = formula
@@ -5525,7 +6473,7 @@ async function loadNoteContent(
               strict: false,
             });
             if (isTaggedDisplay) {
-              return `<div class="katex-scroll-container" style="width: 100%; overflow-x: auto; overflow-y: visible;"><div class="katex-display">${rendered}</div></div>`;
+              return `<div class="katex-scroll-container" style="display:block;width:100%;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;contain:inline-size;"><div class="katex-display">${rendered}</div></div>`;
             }
             return `<span class="katex-inline">${rendered}</span>`;
           } catch {

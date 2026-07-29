@@ -507,7 +507,7 @@ export class OpenRouterProvider implements ILlmProvider {
         error?.message || providerRequestFailed("OpenRouter");
       // ... Error parsing ...
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -553,7 +553,7 @@ export class OpenRouterProvider implements ILlmProvider {
       }
       // ... Error handling ...
       const msg = e?.message || providerRequestFailed("OpenRouter");
-      throw new Error(msg);
+      throw new Error(msg, { cause: e });
     } finally {
       cleanupAbortSignal?.();
     }

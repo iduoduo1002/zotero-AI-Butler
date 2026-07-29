@@ -567,10 +567,10 @@ export class LibraryScannerView extends BaseView {
   }
 
   private async getLoadedItem(itemID: number): Promise<Zotero.Item | null> {
-    let item: Zotero.Item | null = null;
+    let item: Zotero.Item | null;
 
     try {
-      item = await Zotero.Items.getAsync(itemID);
+      item = (await Zotero.Items.getAsync(itemID)) || null;
     } catch (error) {
       this.log(`[LibraryScanner] 获取条目失败，跳过: itemID=${itemID}`, error);
       return null;

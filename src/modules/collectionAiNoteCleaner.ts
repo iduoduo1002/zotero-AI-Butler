@@ -10,11 +10,7 @@ export type CollectionAiNoteCleanScope = "summary" | "all";
 export type CollectionAiNoteCleanAction = "delete" | "deleteAndRegenerate";
 
 export type RegeneratableAiNoteType =
-  | "summary"
-  | "deepRead"
-  | "imageSummary"
-  | "mindmap"
-  | "tableFill";
+  "summary" | "deepRead" | "imageSummary" | "mindmap" | "tableFill";
 export type CleanableAiNoteType = RegeneratableAiNoteType | "chat";
 
 export interface CollectionAiNoteRecord {

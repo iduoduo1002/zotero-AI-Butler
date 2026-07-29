@@ -1524,7 +1524,7 @@ async function getTopLevelParentForImportedItem(
     const raw = item as any;
     if (raw.isAttachment?.()) {
       const parentID = Number(raw.parentID || raw.parentItemID || 0);
-      return parentID ? await Zotero.Items.getAsync(parentID) : null;
+      return parentID ? (await Zotero.Items.getAsync(parentID)) || null : null;
     }
     if (raw.parentID || raw.parentItemID || raw.isNote?.()) return null;
     return item;

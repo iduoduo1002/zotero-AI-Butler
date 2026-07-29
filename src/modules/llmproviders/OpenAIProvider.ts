@@ -260,7 +260,7 @@ export class OpenAIProvider implements ILlmProvider {
             /* ignore */
           }
           if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-          throw new Error(errorMessage);
+          throw new Error(errorMessage, { cause: error });
         } finally {
           cleanupAbortSignal?.();
         }
@@ -317,7 +317,7 @@ export class OpenAIProvider implements ILlmProvider {
         } catch {
           /* ignore */
         }
-        throw new Error(errorMessage);
+        throw new Error(errorMessage, { cause: e });
       } finally {
         cleanupAbortSignal?.();
       }
@@ -472,7 +472,7 @@ export class OpenAIProvider implements ILlmProvider {
         if (abortedDueToError && errorFromProgress) throw errorFromProgress;
         if (streamComplete && gotAnyDelta) return chunks.join("");
         if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-        let errorMessage = getString("common-unknown-error");
+        let errorMessage: string;
         try {
           const responseText =
             error?.xmlhttp?.response || error?.xmlhttp?.responseText;
@@ -489,7 +489,7 @@ export class OpenAIProvider implements ILlmProvider {
           errorMessage =
             error?.message || error?.xmlhttp?.statusText || String(error);
         }
-        throw new Error(errorMessage);
+        throw new Error(errorMessage, { cause: error });
       } finally {
         cleanupAbortSignal?.();
       }
@@ -635,7 +635,7 @@ export class OpenAIProvider implements ILlmProvider {
           } catch {
             /* ignore */
           }
-          throw new Error(errorMessage);
+          throw new Error(errorMessage, { cause: error });
         } finally {
           cleanupAbortSignal?.();
         }
@@ -779,7 +779,7 @@ export class OpenAIProvider implements ILlmProvider {
           /* ignore */
         }
         if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-        throw new Error(errorMessage);
+        throw new Error(errorMessage, { cause: error });
       } finally {
         cleanupAbortSignal?.();
       }
@@ -970,7 +970,7 @@ export class OpenAIProvider implements ILlmProvider {
         message: errorMessage,
       });
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -1355,7 +1355,7 @@ export class OpenAIProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }

@@ -34,11 +34,7 @@ const DEFAULT_STATUS_JSON = JSON.stringify({
 } satisfies LibraryStatusColumnData);
 
 type SummaryColumnStatus =
-  | "idle"
-  | "queued"
-  | "processing"
-  | "completed"
-  | "failed";
+  "idle" | "queued" | "processing" | "completed" | "failed";
 
 export interface LibraryStatusColumnData {
   status: SummaryColumnStatus;
@@ -478,7 +474,7 @@ function hasAiNoteKind(
   for (const noteID of noteIDs) {
     try {
       const note = Zotero.Items.get(noteID);
-      if (!note?.isNote?.()) continue;
+      if (!note || !note.isNote?.()) continue;
 
       const tags = ((note as any).getTags?.() || []) as NoteTag[];
       const noteHtml = ((note as any).getNote?.() || "") as string;
@@ -572,6 +568,7 @@ async function refreshItemsAndParents(itemIDs: number[]): Promise<void> {
     deepReadNoteCache.delete(itemID);
     try {
       const item = await Zotero.Items.getAsync(itemID);
+      if (!item) continue;
       const parentID = Number(
         (item as any)?.parentID || (item as any)?.parentItemID,
       );
@@ -664,8 +661,7 @@ function shouldDeferTreeRefresh(): boolean {
   try {
     for (const pane of Zotero.getZoteroPanes?.() || []) {
       const selectedItems = pane.getSelectedItems?.() as
-        | Array<Pick<Zotero.Item, "isNote"> | null | undefined>
-        | undefined;
+        Array<Pick<Zotero.Item, "isNote"> | null | undefined> | undefined;
       if (selectedItems && selectedItems.length > 0) {
         return true;
       }

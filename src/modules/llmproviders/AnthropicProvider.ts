@@ -248,7 +248,7 @@ export class AnthropicProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -472,7 +472,7 @@ export class AnthropicProvider implements ILlmProvider {
         statusText: error?.xmlhttp?.statusText,
         message: errorMessage,
       });
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }
@@ -872,7 +872,7 @@ export class AnthropicProvider implements ILlmProvider {
         /* ignore */
       }
       if (gotAnyDelta && chunks.length > 0) return chunks.join("");
-      throw new Error(errorMessage);
+      throw new Error(errorMessage, { cause: error });
     } finally {
       cleanupAbortSignal?.();
     }

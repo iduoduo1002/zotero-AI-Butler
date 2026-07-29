@@ -233,7 +233,10 @@ export class PDFExtractor {
 
       for (const attachmentID of attachments) {
         const attachment = await Zotero.Items.getAsync(attachmentID);
-        if (attachment.attachmentContentType === "application/pdf") {
+        if (
+          attachment &&
+          attachment.attachmentContentType === "application/pdf"
+        ) {
           return true;
         }
       }
@@ -266,7 +269,10 @@ export class PDFExtractor {
 
       for (const attachmentID of attachments) {
         const attachment = await Zotero.Items.getAsync(attachmentID);
-        if (attachment.attachmentContentType === "application/pdf") {
+        if (
+          attachment &&
+          attachment.attachmentContentType === "application/pdf"
+        ) {
           pdfAttachments.push(attachment);
         }
       }
@@ -303,7 +309,10 @@ export class PDFExtractor {
 
       for (const attachmentID of attachments) {
         const attachment = await Zotero.Items.getAsync(attachmentID);
-        if (attachment.attachmentContentType === "application/pdf") {
+        if (
+          attachment &&
+          attachment.attachmentContentType === "application/pdf"
+        ) {
           pdfAttachments.push(attachment);
         }
       }
@@ -383,7 +392,10 @@ export class PDFExtractor {
     for (const attachmentID of attachments) {
       const attachment = await Zotero.Items.getAsync(attachmentID);
       // 检查附件的 MIME 类型是否为 PDF
-      if (attachment.attachmentContentType === "application/pdf") {
+      if (
+        attachment &&
+        attachment.attachmentContentType === "application/pdf"
+      ) {
         pdfAttachments.push(attachment);
       }
     }
@@ -1077,7 +1089,10 @@ export class PDFExtractor {
 
     for (const attachmentID of attachments) {
       const attachment = await Zotero.Items.getAsync(attachmentID);
-      if (attachment.attachmentContentType === "application/pdf") {
+      if (
+        attachment &&
+        attachment.attachmentContentType === "application/pdf"
+      ) {
         pdfAttachments.push(attachment);
       }
     }
@@ -1144,6 +1159,7 @@ export class PDFExtractor {
         getString("pdf-error-read-or-encode-failed", {
           args: { message: error.message },
         }),
+        { cause: error },
       );
     }
   }
@@ -1184,6 +1200,7 @@ export class PDFExtractor {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
         getString("pdf-error-read-or-encode-failed", { args: { message } }),
+        { cause: error },
       );
     }
   }

@@ -86,7 +86,7 @@ async function findLegacyAiSummaryNotes(): Promise<LegacyAiNoteRecord[]> {
         if (seenNoteIds.has(noteId)) continue;
         seenNoteIds.add(noteId);
         const note = await Zotero.Items.getAsync(noteId);
-        if (!note?.isNote?.()) continue;
+        if (!note || !note.isNote?.()) continue;
 
         const tags = ((note as any).getTags?.() || []) as NoteTag[];
         const html = String((note as any).getNote?.() || "");
@@ -162,7 +162,7 @@ async function markLegacyNotesAsSummary(
   for (const record of records) {
     try {
       const note = await Zotero.Items.getAsync(record.noteId);
-      if (!note?.isNote?.()) continue;
+      if (!note || !note.isNote?.()) continue;
       const tags = ((note as any).getTags?.() || []) as NoteTag[];
       const html = String((note as any).getNote?.() || "");
       if (!isLegacySummaryNote(tags, html)) continue;

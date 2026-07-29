@@ -308,6 +308,7 @@ export class ImageNoteGenerator {
         getString("image-note-error-read-file-failed", {
           args: { message: error.message || error },
         }),
+        { cause: error },
       );
     }
   }
