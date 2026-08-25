@@ -17,14 +17,14 @@ export function getSelectedCollection(
           : null;
 
     return typeof id === "number"
-      ? ((Zotero.Collections.get(id) as Zotero.Collection | false) || null)
+      ? (Zotero.Collections.get(id) as Zotero.Collection | false) || null
       : null;
   }
 
   if (typeof zoteroPane.getSelectedCollection === "function") {
     return (
-      (zoteroPane.getSelectedCollection() as Zotero.Collection | false | null) ||
-      null
+      (zoteroPane.getSelectedCollection() as
+        Zotero.Collection | false | null) || null
     );
   }
 
