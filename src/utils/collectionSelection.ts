@@ -9,14 +9,16 @@ export function getSelectedCollection(
       ? collections[0]
       : collections;
 
-    if (typeof collection === "number") {
-      return (
-        (Zotero.Collections.get(collection) as Zotero.Collection | false) ||
-        null
-      );
-    }
+    const id =
+      typeof collection === "number"
+        ? collection
+        : typeof (collection as any)?.id === "number"
+          ? (collection as any).id
+          : null;
 
-    return (collection as Zotero.Collection | null) || null;
+    return typeof id === "number"
+      ? ((Zotero.Collections.get(id) as Zotero.Collection | false) || null)
+      : null;
   }
 
   if (typeof zoteroPane.getSelectedCollection === "function") {
