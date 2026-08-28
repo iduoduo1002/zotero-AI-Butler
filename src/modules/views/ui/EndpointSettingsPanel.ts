@@ -58,8 +58,10 @@ function fieldDescription(text: string): string {
   return text;
 }
 
-function reasoningEffortOptions(): Array<{ value: string; label: string }> {
-  return [
+function reasoningEffortOptions(
+  includeMax = false,
+): Array<{ value: string; label: string }> {
+  const options = [
     { value: "default", label: t("endpoint-reasoning-default") },
     { value: "none", label: t("endpoint-reasoning-none") },
     { value: "low", label: t("endpoint-reasoning-low") },
@@ -67,6 +69,10 @@ function reasoningEffortOptions(): Array<{ value: string; label: string }> {
     { value: "high", label: t("endpoint-reasoning-high") },
     { value: "xhigh", label: t("endpoint-reasoning-xhigh") },
   ];
+  if (includeMax) {
+    options.push({ value: "max", label: t("endpoint-reasoning-max") });
+  }
+  return options;
 }
 
 function localizedPdfProcessModeLabel(mode: string): string {
@@ -91,7 +97,8 @@ function endpointSupportsReasoningEffort(endpoint: LLMEndpoint): boolean {
   return (
     endpoint.providerType === "openai" ||
     endpoint.providerType === "openai-compat" ||
-    endpoint.providerType === "openrouter"
+    endpoint.providerType === "openrouter" ||
+    endpoint.providerType === "codex-app-server"
   );
 }
 
@@ -730,8 +737,12 @@ export class EndpointSettingsPanel {
       background: "var(--ai-surface)",
     });
 
-    details.appendChild(this.renderApiUrlField(endpoint));
-    details.appendChild(this.renderApiKeyField(endpoint));
+    if (endpoint.providerType === "codex-app-server") {
+      details.appendChild(this.renderCodexSettings(endpoint));
+    } else {
+      details.appendChild(this.renderApiUrlField(endpoint));
+      details.appendChild(this.renderApiKeyField(endpoint));
+    }
     details.appendChild(this.renderModelField(endpoint));
     details.appendChild(this.renderPdfProcessModeField(endpoint));
     if (endpointSupportsReasoningEffort(endpoint)) {
@@ -739,6 +750,233 @@ export class EndpointSettingsPanel {
     }
     details.appendChild(this.renderConnectionTest(endpoint));
     return details;
+  }
+
+  private renderCodexSettings(endpoint: LLMEndpoint): HTMLElement {
+    const document = doc();
+    const section = document.createElement("div");
+    Object.assign(section.style, {
+      marginBottom: "24px",
+      padding: "12px",
+      border: "1px solid rgba(89, 192, 188, 0.45)",
+      borderRadius: "6px",
+      background: "rgba(89, 192, 188, 0.06)",
+      boxSizing: "border-box",
+    });
+
+    const title = document.createElement("div");
+    title.textContent = t("endpoint-codex-section-title");
+    Object.assign(title.style, {
+      marginBottom: "4px",
+      color: "var(--ai-text)",
+      fontSize: "14px",
+      fontWeight: "700",
+    });
+    section.appendChild(title);
+    section.appendChild(smallMuted(t("endpoint-codex-section-help")));
+
+    const binaryPathInput = createInput(
+      `endpoint-${endpoint.id}-codexBinaryPath`,
+      "text",
+      endpoint.codexBinaryPath || "",
+      t("endpoint-codex-binary-path-placeholder"),
+    );
+    binaryPathInput.addEventListener("input", () => {
+      endpoint.codexBinaryPath = binaryPathInput.value.trim();
+      this.persist();
+    });
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-codex-binary-path-label"),
+        binaryPathInput,
+        t("endpoint-codex-binary-path-help"),
+      ),
+    );
+
+    const role = LLMEndpointManager.normalizeCodexRole(endpoint.codexRole);
+    endpoint.codexRole = role;
+    const roleSelect = createSelect(
+      `endpoint-${endpoint.id}-codexRole`,
+      [
+        { value: "sol", label: t("endpoint-codex-role-sol") },
+        { value: "luna", label: t("endpoint-codex-role-luna") },
+      ],
+      role,
+      (value) => {
+        const previousRole = LLMEndpointManager.normalizeCodexRole(
+          endpoint.codexRole,
+        );
+        const previousDefaults = LLMEndpointManager.providerDefaults(
+          "codex-app-server",
+          previousRole,
+        );
+        const modelCustomized =
+          endpoint.model.trim() !== previousDefaults.model;
+        const previousEffort = LLMEndpointManager.normalizeCodexReasoningEffort(
+          endpoint.reasoningEffort,
+          String(previousDefaults.reasoningEffort || "high"),
+        );
+        const effortCustomized =
+          previousEffort !== previousDefaults.reasoningEffort;
+        const nextRole = LLMEndpointManager.normalizeCodexRole(value);
+        const nextDefaults = LLMEndpointManager.providerDefaults(
+          "codex-app-server",
+          nextRole,
+        );
+
+        endpoint.codexRole = nextRole;
+        if (!modelCustomized) endpoint.model = nextDefaults.model;
+        if (!effortCustomized) {
+          endpoint.reasoningEffort = nextDefaults.reasoningEffort;
+        }
+        this.persist();
+        this.render();
+      },
+    );
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-codex-role-label"),
+        roleSelect,
+        t("endpoint-codex-role-help"),
+      ),
+    );
+
+    const approvalValues = ["untrusted", "on-request", "never"];
+    const approvalValue =
+      typeof endpoint.approvalPolicy === "string" &&
+      approvalValues.includes(endpoint.approvalPolicy)
+        ? endpoint.approvalPolicy
+        : "on-request";
+    if (typeof endpoint.approvalPolicy !== "object") {
+      endpoint.approvalPolicy = approvalValue as any;
+    }
+    const approvalSelect = createSelect(
+      `endpoint-${endpoint.id}-approvalPolicy`,
+      [
+        {
+          value: "untrusted",
+          label: t("endpoint-codex-approval-untrusted"),
+        },
+        {
+          value: "on-request",
+          label: t("endpoint-codex-approval-on-request"),
+        },
+        { value: "never", label: t("endpoint-codex-approval-never") },
+      ],
+      approvalValue,
+      (value) => {
+        endpoint.approvalPolicy = value as any;
+        this.persist();
+      },
+    );
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-codex-approval-policy-label"),
+        approvalSelect,
+        t("endpoint-codex-approval-policy-help"),
+      ),
+    );
+
+    const sandboxValues = [
+      "read-only",
+      "workspace-write",
+      "danger-full-access",
+    ];
+    const sandboxValue =
+      typeof endpoint.sandboxPolicy === "string" &&
+      sandboxValues.includes(endpoint.sandboxPolicy)
+        ? endpoint.sandboxPolicy
+        : "read-only";
+    if (typeof endpoint.sandboxPolicy !== "object") {
+      endpoint.sandboxPolicy = sandboxValue as any;
+    }
+    const sandboxSelect = createSelect(
+      `endpoint-${endpoint.id}-sandboxPolicy`,
+      [
+        {
+          value: "read-only",
+          label: t("endpoint-codex-sandbox-read-only"),
+        },
+        {
+          value: "workspace-write",
+          label: t("endpoint-codex-sandbox-workspace-write"),
+        },
+        {
+          value: "danger-full-access",
+          label: t("endpoint-codex-sandbox-danger-full-access"),
+        },
+      ],
+      sandboxValue,
+      (value) => {
+        endpoint.sandboxPolicy = value as any;
+        if (value === "danger-full-access") endpoint.networkAccess = false;
+        this.persist();
+        this.render();
+      },
+    );
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-codex-sandbox-policy-label"),
+        sandboxSelect,
+        t("endpoint-codex-sandbox-policy-help"),
+      ),
+    );
+
+    const networkInput = document.createElement("input");
+    networkInput.type = "checkbox";
+    networkInput.id = `setting-endpoint-${endpoint.id}-networkAccess`;
+    networkInput.checked = endpoint.networkAccess === true;
+    networkInput.disabled = sandboxValue === "danger-full-access";
+    Object.assign(networkInput.style, {
+      width: "20px",
+      height: "20px",
+      cursor: networkInput.disabled ? "not-allowed" : "pointer",
+    });
+    networkInput.addEventListener("change", () => {
+      endpoint.networkAccess = networkInput.checked;
+      this.persist();
+    });
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-codex-network-access-label"),
+        networkInput,
+        t("endpoint-codex-network-access-help"),
+      ),
+    );
+
+    const mcpWrapper = document.createElement("div");
+    Object.assign(mcpWrapper.style, {
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      minHeight: "38px",
+    });
+    const mcpInput = document.createElement("input");
+    mcpInput.type = "checkbox";
+    mcpInput.id = `setting-endpoint-${endpoint.id}-mcpEnabled`;
+    // The first release has no supported MCP transport. Keep the control
+    // visibly off even if an older/manual endpoint contains true; the runtime
+    // still fail-closes such a value as codex-mcp-reserved.
+    mcpInput.checked = false;
+    mcpInput.disabled = true;
+    mcpInput.title = t("endpoint-codex-mcp-reserved");
+    const mcpStatus = document.createElement("span");
+    mcpStatus.textContent = t("endpoint-codex-mcp-reserved");
+    Object.assign(mcpStatus.style, {
+      color: "var(--ai-text-muted)",
+      fontSize: "12px",
+    });
+    mcpWrapper.appendChild(mcpInput);
+    mcpWrapper.appendChild(mcpStatus);
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-codex-mcp-label"),
+        mcpWrapper,
+        t("endpoint-codex-mcp-help"),
+      ),
+    );
+
+    return section;
   }
 
   private renderApiUrlField(endpoint: LLMEndpoint): HTMLElement {
@@ -903,12 +1141,11 @@ export class EndpointSettingsPanel {
     });
     row.appendChild(modelInput);
 
-    const fetchButton = createStyledButton(
-      t("endpoint-fetch-models"),
-      "#667eea",
-      "small",
-    );
-    row.appendChild(fetchButton);
+    const fetchButton =
+      endpoint.providerType === "codex-app-server"
+        ? null
+        : createStyledButton(t("endpoint-fetch-models"), "#667eea", "small");
+    if (fetchButton) row.appendChild(fetchButton);
     wrapper.appendChild(row);
 
     const modelList = document.createElement("div");
@@ -920,9 +1157,9 @@ export class EndpointSettingsPanel {
       overflowY: "auto",
       background: "var(--ai-surface)",
     });
-    wrapper.appendChild(modelList);
+    if (fetchButton) wrapper.appendChild(modelList);
 
-    fetchButton.addEventListener("click", () => {
+    fetchButton?.addEventListener("click", () => {
       void this.fetchModels(endpoint, modelList, modelInput);
     });
 
@@ -1018,22 +1255,35 @@ export class EndpointSettingsPanel {
   }
 
   private renderReasoningEffortField(endpoint: LLMEndpoint): HTMLElement {
-    const defaults = LLMEndpointManager.providerDefaults(endpoint.providerType);
-    const value = normalizeReasoningEffortSetting(
-      endpoint.reasoningEffort,
-      defaults.reasoningEffort || "default",
+    const isCodex = endpoint.providerType === "codex-app-server";
+    const defaults = LLMEndpointManager.providerDefaults(
+      endpoint.providerType,
+      isCodex
+        ? LLMEndpointManager.normalizeCodexRole(endpoint.codexRole)
+        : "sol",
     );
+    const value = isCodex
+      ? LLMEndpointManager.normalizeCodexReasoningEffort(
+          endpoint.reasoningEffort,
+          String(defaults.reasoningEffort || "high"),
+        )
+      : normalizeReasoningEffortSetting(
+          endpoint.reasoningEffort,
+          (defaults.reasoningEffort as any) || "default",
+        );
     endpoint.reasoningEffort = value;
 
     const select = createSelect(
       `endpoint-${endpoint.id}-reasoningEffort`,
-      reasoningEffortOptions(),
+      reasoningEffortOptions(isCodex),
       value,
       (newValue) => {
-        endpoint.reasoningEffort = normalizeReasoningEffortSetting(
-          newValue,
-          "default",
-        );
+        endpoint.reasoningEffort = isCodex
+          ? LLMEndpointManager.normalizeCodexReasoningEffort(
+              newValue,
+              String(defaults.reasoningEffort || "high"),
+            )
+          : normalizeReasoningEffortSetting(newValue, "default");
         this.persist();
       },
     );
@@ -1415,6 +1665,10 @@ export class EndpointSettingsPanel {
     const model = (endpoint.model || defaults.model)
       .trim()
       .replace(/^models\//, "");
+
+    if (endpoint.providerType === "codex-app-server") {
+      return `${LLMEndpointManager.providerLabel(endpoint.providerType)} · ${model}`;
+    }
 
     if (endpoint.providerType === "openai") {
       return this.toResponsesEndpoint(rawUrl, "/v1");

@@ -388,6 +388,7 @@ llm-endpoint-provider-openrouter = OpenRouter
 llm-endpoint-provider-ollama = Ollama
 llm-endpoint-provider-openai = OpenAI (Responses 新接口)
 llm-endpoint-provider-volcanoark = 火山方舟 (Volcano Ark)
+llm-endpoint-provider-codex-app-server = Codex App Server（本机登录）
 progress-llm-preparing = 准备模型输入
 progress-llm-uploading = 调用大模型中（上传请求中）
 progress-llm-streaming = 调用大模型中（接收响应中）

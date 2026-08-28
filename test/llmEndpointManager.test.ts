@@ -36,6 +36,14 @@ const prefKeys = [
   "ollamaApiUrl",
   "ollamaApiKey",
   "ollamaModel",
+  "codexRole",
+  "codexBinaryPath",
+  "codexModel",
+  "codexReasoningEffort",
+  "codexApprovalPolicy",
+  "codexSandboxPolicy",
+  "codexNetworkAccess",
+  "codexMcpEnabled",
 ];
 
 function prefName(key: string): string {
@@ -75,6 +83,126 @@ describe("LLMEndpointManager", function () {
       if (value === undefined) Zotero.Prefs.clear(fullKey, true);
       else Zotero.Prefs.set(fullKey, value as any, true);
     }
+  });
+
+  it("enumerates Codex App Server and creates safe Sol defaults", function () {
+    expect(LLMEndpointManager.providerTypes()).to.include("codex-app-server");
+
+    const endpoint = LLMEndpointManager.createEndpoint(
+      "codex-app-server" as any,
+    );
+
+    expect(endpoint).to.include({
+      providerType: "codex-app-server",
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      codexRole: "sol",
+      codexBinaryPath: "",
+      approvalPolicy: "on-request",
+      sandboxPolicy: "read-only",
+      networkAccess: false,
+      mcpEnabled: false,
+      pdfProcessMode: "text",
+    });
+  });
+
+  it("normalizes a Codex Luna endpoint to the Luna defaults", function () {
+    LLMEndpointManager.saveEndpoints([
+      {
+        ...makeEndpoint("codex-luna"),
+        providerType: "codex-app-server" as any,
+        apiUrl: "",
+        apiKey: "",
+        model: "",
+        reasoningEffort: "default",
+        codexRole: "luna" as any,
+        pdfProcessMode: undefined,
+      } as any,
+    ]);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include({
+      providerType: "codex-app-server",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "max",
+      codexRole: "luna",
+      pdfProcessMode: "text",
+    });
+  });
+
+  it("allows Codex endpoints without API URL or API key when a model is set", function () {
+    const endpoint = {
+      ...LLMEndpointManager.createEndpoint("codex-app-server" as any),
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-sol",
+    } as any;
+
+    expect(LLMEndpointManager.isEndpointUsable(endpoint)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(endpoint)).to.deep.equal([]);
+  });
+
+  it("falls back to the legacy OpenAI provider for unknown stored provider values", function () {
+    Zotero.Prefs.set(
+      prefName("llmEndpoints"),
+      JSON.stringify([
+        {
+          ...makeEndpoint("unknown-provider"),
+          providerType: "codex-unknown-provider",
+        },
+      ]),
+      true,
+    );
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.providerType).to.equal("openai");
+  });
+
+  it("defaults Codex PDF processing to extracted text", function () {
+    LLMEndpointManager.saveEndpoints([
+      {
+        ...LLMEndpointManager.createEndpoint("codex-app-server" as any),
+        pdfProcessMode: undefined,
+      } as any,
+    ]);
+
+    expect(LLMEndpointManager.getEndpoints()[0].pdfProcessMode).to.equal(
+      "text",
+    );
+  });
+
+  it("migrates legacy Codex preferences without introducing API credentials", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+    Zotero.Prefs.set(
+      prefName("codexBinaryPath"),
+      " /usr/local/bin/codex ",
+      true,
+    );
+    Zotero.Prefs.set(prefName("codexModel"), "", true);
+    Zotero.Prefs.set(prefName("codexNetworkAccess"), true, true);
+    Zotero.Prefs.set(prefName("codexMcpEnabled"), true, true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include({
+      id: "endpoint-legacy-primary",
+      providerType: "codex-app-server",
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "max",
+      codexRole: "luna",
+      codexBinaryPath: "/usr/local/bin/codex",
+      networkAccess: true,
+      mcpEnabled: true,
+      pdfProcessMode: "text",
+    });
   });
 
   it("migrates an empty endpoint list from legacy provider prefs", function () {

@@ -29,6 +29,14 @@ declare namespace _ZoteroTypes {
       "ollamaApiUrl": string;
       "ollamaApiKey": string;
       "ollamaModel": string;
+      "codexRole": string;
+      "codexBinaryPath": string;
+      "codexModel": string;
+      "codexReasoningEffort": string;
+      "codexApprovalPolicy": string;
+      "codexSandboxPolicy": string;
+      "codexNetworkAccess": boolean;
+      "codexMcpEnabled": boolean;
       "llmEndpoints": string;
       "llmRoutingStrategy": string;
       "llmRoundRobinCursor": string;

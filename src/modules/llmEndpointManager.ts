@@ -8,6 +8,11 @@ export type LLMEndpointProviderType = ProviderId;
 export type LLMRoutingStrategy = "priority" | "roundRobin";
 export type LLMPdfProcessMode = "base64" | "text" | "mineru";
 export type LLMEndpointPdfProcessMode = "global" | LLMPdfProcessMode;
+export type LLMCodexRole = "sol" | "luna";
+export type LLMCodexApprovalPolicy = "untrusted" | "on-request" | "never";
+export type LLMCodexSandboxPolicy =
+  "read-only" | "workspace-write" | "danger-full-access";
+export type LLMEndpointReasoningEffort = LLMReasoningEffortSetting | "max";
 
 export interface LLMEndpoint {
   id: string;
@@ -16,7 +21,13 @@ export interface LLMEndpoint {
   apiUrl: string;
   apiKey: string;
   model: string;
-  reasoningEffort?: LLMReasoningEffortSetting;
+  reasoningEffort?: LLMEndpointReasoningEffort;
+  codexRole?: LLMCodexRole;
+  codexBinaryPath?: string;
+  approvalPolicy?: LLMCodexApprovalPolicy | Record<string, unknown>;
+  sandboxPolicy?: LLMCodexSandboxPolicy | Record<string, unknown>;
+  networkAccess?: boolean;
+  mcpEnabled?: boolean;
   pdfProcessMode?: LLMEndpointPdfProcessMode;
   enabled: boolean;
   createdAt: string;
@@ -33,7 +44,7 @@ export interface ProviderDefaults {
   label: string;
   apiUrl: string;
   model: string;
-  reasoningEffort?: LLMReasoningEffortSetting;
+  reasoningEffort?: LLMEndpointReasoningEffort;
 }
 
 type ProviderDefaultsConfig = Omit<ProviderDefaults, "label"> & {
@@ -86,6 +97,12 @@ const PROVIDER_DEFAULTS: Record<
     model: "llama3.2",
     reasoningEffort: "default",
   },
+  "codex-app-server": {
+    labelKey: "llm-endpoint-provider-codex-app-server",
+    apiUrl: "",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high",
+  },
 };
 
 const PROVIDER_TYPES = Object.keys(
@@ -93,6 +110,18 @@ const PROVIDER_TYPES = Object.keys(
 ) as LLMEndpointProviderType[];
 
 const LEGACY_PRIMARY_ENDPOINT_ID = "endpoint-legacy-primary";
+const CODEX_DEFAULT_APPROVAL_POLICY: LLMCodexApprovalPolicy = "on-request";
+const CODEX_DEFAULT_SANDBOX_POLICY: LLMCodexSandboxPolicy = "read-only";
+const CODEX_DEFAULT_NETWORK_ACCESS = false;
+const CODEX_DEFAULT_MCP_ENABLED = false;
+
+const CODEX_ROLE_DEFAULTS: Record<
+  LLMCodexRole,
+  { model: string; reasoningEffort: LLMEndpointReasoningEffort }
+> = {
+  sol: { model: "gpt-5.6-sol", reasoningEffort: "high" },
+  luna: { model: "gpt-5.6-luna", reasoningEffort: "max" },
+};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -134,6 +163,73 @@ function normalizeEndpointPdfProcessMode(
   return "global";
 }
 
+function normalizeCodexRole(raw: unknown): LLMCodexRole {
+  return String(raw || "")
+    .trim()
+    .toLowerCase() === "luna"
+    ? "luna"
+    : "sol";
+}
+
+function normalizeCodexReasoningEffort(
+  raw: unknown,
+  fallback: LLMEndpointReasoningEffort,
+): LLMEndpointReasoningEffort {
+  const value = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    !value ||
+    value === "default" ||
+    value === "auto" ||
+    value === "inherit"
+  ) {
+    return fallback;
+  }
+  if (value === "max") return "max";
+  const normalized = normalizeReasoningEffortSetting(value, "default");
+  return normalized === "default" ? fallback : normalized;
+}
+
+function normalizeCodexApprovalPolicy(
+  raw: unknown,
+): LLMCodexApprovalPolicy | Record<string, unknown> {
+  if (raw === "untrusted" || raw === "on-request" || raw === "never") {
+    return raw;
+  }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return CODEX_DEFAULT_APPROVAL_POLICY;
+}
+
+function normalizeCodexSandboxPolicy(
+  raw: unknown,
+): LLMCodexSandboxPolicy | Record<string, unknown> {
+  if (
+    raw === "read-only" ||
+    raw === "workspace-write" ||
+    raw === "danger-full-access"
+  ) {
+    return raw;
+  }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return CODEX_DEFAULT_SANDBOX_POLICY;
+}
+
+function normalizeCodexPdfProcessMode(raw: unknown): LLMEndpointPdfProcessMode {
+  const value = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (value === "global") return "global";
+  if (value === "base64" || value === "text" || value === "mineru") {
+    return value;
+  }
+  return "text";
+}
+
 function parseJsonArray(raw: unknown): unknown[] {
   if (typeof raw !== "string" || !raw.trim()) return [];
   try {
@@ -149,21 +245,44 @@ function normalizeEndpoint(
   fallbackIndex: number,
 ): LLMEndpoint {
   const providerType = safeProviderType(raw.providerType);
+  const codex = providerType === "codex-app-server";
+  const codexRole = codex ? normalizeCodexRole(raw.codexRole) : undefined;
   const defaults = providerDefaults(providerType);
+  const roleDefaults = codex ? CODEX_ROLE_DEFAULTS[codexRole!] : undefined;
   const createdAt = raw.createdAt || nowIso();
+  const model = String(raw.model || "").trim();
+  const reasoningEffort = codex
+    ? normalizeCodexReasoningEffort(
+        raw.reasoningEffort,
+        roleDefaults!.reasoningEffort,
+      )
+    : normalizeReasoningEffortSetting(
+        raw.reasoningEffort,
+        (defaults.reasoningEffort as LLMReasoningEffortSetting) || "default",
+      );
+  const endpointPdfProcessMode = codex
+    ? normalizeCodexPdfProcessMode(raw.pdfProcessMode)
+    : normalizeEndpointPdfProcessMode(raw.pdfProcessMode);
   return {
     id: String(raw.id || "").trim() || makeEndpointId(),
     name:
       String(raw.name || "").trim() || `${defaults.label} ${fallbackIndex + 1}`,
     providerType,
-    apiUrl: String(raw.apiUrl || defaults.apiUrl).trim(),
-    apiKey: String(raw.apiKey || "").trim(),
-    model: String(raw.model || defaults.model).trim(),
-    reasoningEffort: normalizeReasoningEffortSetting(
-      raw.reasoningEffort,
-      defaults.reasoningEffort || "default",
-    ),
-    pdfProcessMode: normalizeEndpointPdfProcessMode(raw.pdfProcessMode),
+    apiUrl: codex ? "" : String(raw.apiUrl || defaults.apiUrl).trim(),
+    apiKey: codex ? "" : String(raw.apiKey || "").trim(),
+    model: model || roleDefaults?.model || defaults.model,
+    reasoningEffort,
+    ...(codex
+      ? {
+          codexRole,
+          codexBinaryPath: String(raw.codexBinaryPath || "").trim(),
+          approvalPolicy: normalizeCodexApprovalPolicy(raw.approvalPolicy),
+          sandboxPolicy: normalizeCodexSandboxPolicy(raw.sandboxPolicy),
+          networkAccess: raw.networkAccess === true,
+          mcpEnabled: raw.mcpEnabled === true,
+        }
+      : {}),
+    pdfProcessMode: endpointPdfProcessMode,
     enabled: raw.enabled !== false,
     createdAt,
     updatedAt: raw.updatedAt || createdAt,
@@ -186,10 +305,31 @@ export class LLMEndpointManager {
     return [...PROVIDER_TYPES];
   }
 
+  static normalizeCodexRole(raw: unknown): LLMCodexRole {
+    return normalizeCodexRole(raw);
+  }
+
+  static normalizeCodexReasoningEffort(
+    raw: unknown,
+    fallback: string,
+  ): LLMEndpointReasoningEffort {
+    return normalizeCodexReasoningEffort(
+      raw,
+      fallback as LLMEndpointReasoningEffort,
+    );
+  }
+
   static providerDefaults(
     providerType: LLMEndpointProviderType,
+    codexRole: LLMCodexRole = "sol",
   ): ProviderDefaults {
-    return providerDefaults(providerType);
+    const normalizedProvider = safeProviderType(providerType);
+    const defaults = providerDefaults(normalizedProvider);
+    if (normalizedProvider !== "codex-app-server") return defaults;
+    return {
+      ...defaults,
+      ...CODEX_ROLE_DEFAULTS[normalizeCodexRole(codexRole)],
+    } as ProviderDefaults;
   }
 
   static providerLabel(providerType: string): string {
@@ -197,12 +337,16 @@ export class LLMEndpointManager {
   }
 
   static providerAllowsEmptyApiKey(providerType: string): boolean {
-    return safeProviderType(providerType) === "ollama";
+    const normalized = safeProviderType(providerType);
+    return normalized === "ollama" || normalized === "codex-app-server";
   }
 
   static isEndpointUsable(
     endpoint: Pick<LLMEndpoint, "apiUrl" | "apiKey" | "model" | "providerType">,
   ): boolean {
+    if (safeProviderType(endpoint.providerType) === "codex-app-server") {
+      return endpoint.model.trim().length > 0;
+    }
     return (
       endpoint.apiUrl.trim().length > 0 &&
       endpoint.model.trim().length > 0 &&
@@ -245,18 +389,32 @@ export class LLMEndpointManager {
 
   static createEndpoint(
     providerType: LLMEndpointProviderType = "openai-compat",
+    codexRole: LLMCodexRole = "sol",
   ): LLMEndpoint {
-    const defaults = this.providerDefaults(providerType);
+    const normalizedProvider = safeProviderType(providerType);
+    const normalizedRole = normalizeCodexRole(codexRole);
+    const defaults = this.providerDefaults(normalizedProvider, normalizedRole);
+    const codex = normalizedProvider === "codex-app-server";
     const timestamp = nowIso();
     return {
       id: makeEndpointId(),
       name: defaults.label,
-      providerType,
+      providerType: normalizedProvider,
       apiUrl: defaults.apiUrl,
       apiKey: "",
       model: defaults.model,
       reasoningEffort: defaults.reasoningEffort || "default",
-      pdfProcessMode: "global",
+      ...(codex
+        ? {
+            codexRole: normalizedRole,
+            codexBinaryPath: "",
+            approvalPolicy: CODEX_DEFAULT_APPROVAL_POLICY,
+            sandboxPolicy: CODEX_DEFAULT_SANDBOX_POLICY,
+            networkAccess: CODEX_DEFAULT_NETWORK_ACCESS,
+            mcpEnabled: CODEX_DEFAULT_MCP_ENABLED,
+          }
+        : {}),
+      pdfProcessMode: codex ? "text" : "global",
       enabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -417,8 +575,11 @@ export class LLMEndpointManager {
   static validateEndpoint(endpoint: LLMEndpoint): string[] {
     const missing: string[] = [];
     if (!endpoint.name.trim()) missing.push("name");
-    if (!endpoint.apiUrl.trim()) missing.push("apiUrl");
+    const isCodex =
+      safeProviderType(endpoint.providerType) === "codex-app-server";
+    if (!isCodex && !endpoint.apiUrl.trim()) missing.push("apiUrl");
     if (
+      !isCodex &&
       !this.providerAllowsEmptyApiKey(endpoint.providerType) &&
       !endpoint.apiKey.trim()
     ) {
@@ -447,7 +608,25 @@ export class LLMEndpointManager {
       ...legacyEndpoint,
       createdAt: previous.createdAt,
       enabled: previous.enabled,
-      pdfProcessMode: previous.pdfProcessMode || "global",
+      pdfProcessMode:
+        previous.pdfProcessMode ||
+        (legacyEndpoint.providerType === "codex-app-server"
+          ? "text"
+          : "global"),
+      ...(legacyEndpoint.providerType === "codex-app-server"
+        ? {
+            codexRole: previous.codexRole || legacyEndpoint.codexRole,
+            codexBinaryPath:
+              previous.codexBinaryPath ?? legacyEndpoint.codexBinaryPath,
+            approvalPolicy:
+              previous.approvalPolicy ?? legacyEndpoint.approvalPolicy,
+            sandboxPolicy:
+              previous.sandboxPolicy ?? legacyEndpoint.sandboxPolicy,
+            networkAccess:
+              previous.networkAccess ?? legacyEndpoint.networkAccess,
+            mcpEnabled: previous.mcpEnabled ?? legacyEndpoint.mcpEnabled,
+          }
+        : {}),
     };
 
     if (this.endpointCoreEquals(previous, synced)) {
@@ -475,15 +654,39 @@ export class LLMEndpointManager {
     );
     const defaults = this.providerDefaults(providerType);
     const timestamp = nowIso();
+    const codex = providerType === "codex-app-server";
+    const codexRole = codex
+      ? normalizeCodexRole(getPref("codexRole" as any))
+      : undefined;
     return {
       id: LEGACY_PRIMARY_ENDPOINT_ID,
       name: defaults.label,
       providerType,
-      apiUrl: this.getLegacyApiUrl(providerType) || defaults.apiUrl,
-      apiKey: this.getLegacyApiKey(providerType),
-      model: this.getLegacyModel(providerType) || defaults.model,
-      reasoningEffort: this.getLegacyReasoningEffort(providerType),
-      pdfProcessMode: "global",
+      apiUrl: codex
+        ? ""
+        : this.getLegacyApiUrl(providerType) || defaults.apiUrl,
+      apiKey: codex ? "" : this.getLegacyApiKey(providerType),
+      model:
+        this.getLegacyModel(providerType) ||
+        (codex ? CODEX_ROLE_DEFAULTS[codexRole!].model : defaults.model),
+      reasoningEffort: this.getLegacyReasoningEffort(providerType, codexRole),
+      ...(codex
+        ? {
+            codexRole,
+            codexBinaryPath: String(
+              getPref("codexBinaryPath" as any) || "",
+            ).trim(),
+            approvalPolicy: normalizeCodexApprovalPolicy(
+              getPref("codexApprovalPolicy" as any),
+            ),
+            sandboxPolicy: normalizeCodexSandboxPolicy(
+              getPref("codexSandboxPolicy" as any),
+            ),
+            networkAccess: getPref("codexNetworkAccess" as any) === true,
+            mcpEnabled: getPref("codexMcpEnabled" as any) === true,
+          }
+        : {}),
+      pdfProcessMode: codex ? "text" : "global",
       enabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -501,6 +704,7 @@ export class LLMEndpointManager {
       openrouter: "openRouterApiUrl",
       volcanoark: "volcanoArkApiUrl",
       ollama: "ollamaApiUrl",
+      "codex-app-server": "codexApiUrl",
     };
     return String(getPref(keyByProvider[providerType] as any) || "").trim();
   }
@@ -516,6 +720,7 @@ export class LLMEndpointManager {
       openrouter: "openRouterApiKey",
       volcanoark: "volcanoArkApiKey",
       ollama: "ollamaApiKey",
+      "codex-app-server": "codexApiKey",
     };
     const value = String(getPref(keyByProvider[providerType] as any) || "");
     if (providerType === "openai-compat" && !value.trim()) {
@@ -533,6 +738,7 @@ export class LLMEndpointManager {
       openrouter: "openRouterModel",
       volcanoark: "volcanoArkModel",
       ollama: "ollamaModel",
+      "codex-app-server": "codexModel",
     };
     const value = String(getPref(keyByProvider[providerType] as any) || "");
     if (providerType === "openai-compat" && !value.trim()) {
@@ -543,11 +749,20 @@ export class LLMEndpointManager {
 
   private static getLegacyReasoningEffort(
     providerType: LLMEndpointProviderType,
-  ): LLMReasoningEffortSetting {
+    codexRole?: LLMCodexRole,
+  ): LLMEndpointReasoningEffort {
     const defaults = this.providerDefaults(providerType);
+    if (providerType === "codex-app-server") {
+      const role = normalizeCodexRole(codexRole);
+      return normalizeCodexReasoningEffort(
+        getPref("codexReasoningEffort" as any) ||
+          getPref("reasoningEffort" as any),
+        CODEX_ROLE_DEFAULTS[role].reasoningEffort,
+      );
+    }
     const reasoningEffort = normalizeReasoningEffortSetting(
       getPref("reasoningEffort" as any),
-      defaults.reasoningEffort || "default",
+      (defaults.reasoningEffort as LLMReasoningEffortSetting) || "default",
     );
     return reasoningEffort === "default"
       ? defaults.reasoningEffort || "default"
@@ -555,6 +770,14 @@ export class LLMEndpointManager {
   }
 
   private static endpointCoreEquals(a: LLMEndpoint, b: LLMEndpoint): boolean {
+    const codexFieldsEqual =
+      a.providerType !== "codex-app-server" ||
+      (a.codexRole === b.codexRole &&
+        a.codexBinaryPath === b.codexBinaryPath &&
+        JSON.stringify(a.approvalPolicy) === JSON.stringify(b.approvalPolicy) &&
+        JSON.stringify(a.sandboxPolicy) === JSON.stringify(b.sandboxPolicy) &&
+        a.networkAccess === b.networkAccess &&
+        a.mcpEnabled === b.mcpEnabled);
     return (
       a.id === b.id &&
       a.name === b.name &&
@@ -564,7 +787,8 @@ export class LLMEndpointManager {
       a.model === b.model &&
       a.reasoningEffort === b.reasoningEffort &&
       (a.pdfProcessMode || "global") === (b.pdfProcessMode || "global") &&
-      a.enabled === b.enabled
+      a.enabled === b.enabled &&
+      codexFieldsEqual
     );
   }
 }

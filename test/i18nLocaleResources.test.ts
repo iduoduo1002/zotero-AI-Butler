@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { expect } from "chai";
 import {
   getLocaleID,
@@ -164,6 +166,50 @@ describe("i18n getString helper", function () {
     };
     return run();
   }
+
+  it("defines Codex endpoint settings messages in both locale resources", function () {
+    const keys = [
+      "llm-endpoint-provider-codex-app-server",
+      "endpoint-codex-binary-path-label",
+      "endpoint-codex-binary-path-help",
+      "endpoint-codex-binary-path-placeholder",
+      "endpoint-codex-role-label",
+      "endpoint-codex-role-help",
+      "endpoint-codex-role-sol",
+      "endpoint-codex-role-luna",
+      "endpoint-codex-approval-policy-label",
+      "endpoint-codex-approval-policy-help",
+      "endpoint-codex-approval-untrusted",
+      "endpoint-codex-approval-on-request",
+      "endpoint-codex-approval-never",
+      "endpoint-codex-sandbox-policy-label",
+      "endpoint-codex-sandbox-policy-help",
+      "endpoint-codex-sandbox-read-only",
+      "endpoint-codex-sandbox-workspace-write",
+      "endpoint-codex-sandbox-danger-full-access",
+      "endpoint-codex-network-access-label",
+      "endpoint-codex-network-access-help",
+      "endpoint-codex-mcp-label",
+      "endpoint-codex-mcp-reserved",
+      "endpoint-codex-mcp-help",
+      "endpoint-codex-test-help",
+    ];
+
+    for (const locale of ["en-US", "zh-CN"]) {
+      const sources = ["mainWindow.ftl", "preferences.ftl"].map((file) =>
+        fs.readFileSync(
+          path.join(process.cwd(), "addon", "locale", locale, file),
+          "utf8",
+        ),
+      );
+      const source = sources.join("\n");
+      for (const key of keys) {
+        expect(source, `${locale} missing ${key}`).to.match(
+          new RegExp(`^${key}\\s*=`, "m"),
+        );
+      }
+    }
+  });
 
   it("formats localized provider and preset labels", function () {
     withMessages(

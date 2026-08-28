@@ -388,6 +388,7 @@ llm-endpoint-provider-openrouter = OpenRouter
 llm-endpoint-provider-ollama = Ollama
 llm-endpoint-provider-openai = OpenAI (Responses API)
 llm-endpoint-provider-volcanoark = Volcano Ark
+llm-endpoint-provider-codex-app-server = Codex App Server (local login)
 progress-llm-preparing = Preparing model input
 progress-llm-uploading = Calling LLM (uploading request)
 progress-llm-streaming = Calling LLM (receiving response)

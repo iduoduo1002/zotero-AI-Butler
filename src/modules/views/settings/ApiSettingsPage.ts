@@ -1997,6 +1997,11 @@ export class ApiSettingsPage {
         apiKeyId: "ollamaApiKey",
         modelId: "ollamaModel",
       },
+      "codex-app-server": {
+        apiUrlId: "",
+        apiKeyId: "",
+        modelId: "codexModel",
+      },
     };
     const config = configs[keyManagerId];
 
@@ -2115,6 +2120,7 @@ export class ApiSettingsPage {
         openrouter: "openRouterApiKey",
         volcanoark: "volcanoArkApiKey",
         ollama: "ollamaApiKey",
+        "codex-app-server": "",
       };
       const prefKey = mapping[providerId];
       if (prefKey) {
