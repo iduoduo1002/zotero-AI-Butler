@@ -1287,6 +1287,7 @@ describe("Codex task queue gate", function () {
     });
     const roles: string[] = [];
     const providerExecutionIds: string[] = [];
+    const eventLog: string[] = [];
     let saveTxCount = 0;
     let persistedProbeCount = 0;
     let providerCall = 0;
@@ -1336,6 +1337,11 @@ describe("Codex task queue gate", function () {
                     },
                   ],
                 });
+        if (providerCall === 1) eventLog.push("planning:done");
+        if (providerCall === 2) eventLog.push("luna:done");
+        if (providerCall === 3) {
+          eventLog.push(`acceptance:${acceptanceValue}`);
+        }
         expect(prompt).to.be.a("string");
         await options.onCodexTurnResult?.({
           threadId: `production-thread-${providerCall}`,
@@ -1359,6 +1365,8 @@ describe("Codex task queue gate", function () {
     PDFExtractor.extractTextFromItem = async () => "safe extracted text";
     AiNoteService.findNoteRecord = async () => null;
     AiNoteService.saveGeneratedNote = async (options: any) => {
+      expect(eventLog.at(-1)).to.equal("acceptance:PASS");
+      eventLog.push("save");
       const html = options.html as string;
       saveTxCount += 1;
       (note as any).getNote = () => html;
@@ -1369,6 +1377,8 @@ describe("Codex task queue gate", function () {
       reason: "candidate-ready",
     });
     TaskArtifacts.probe = async () => {
+      expect(eventLog.at(-1)).to.equal("save");
+      eventLog.push("persisted-probe");
       persistedProbeCount += 1;
       expect(saveTxCount).to.be.greaterThan(0);
       return { exists: true, reason: "persisted" };
@@ -1395,6 +1405,12 @@ describe("Codex task queue gate", function () {
     manager.abortingTasks = new Set();
     manager.progressCallbacks = new Set();
     manager.completeCallbacks = new Set();
+    manager.completeCallbacks.add((_taskId: string, success: boolean) => {
+      if (success) {
+        expect(eventLog.at(-1)).to.equal("persisted-probe");
+        eventLog.push("complete");
+      }
+    });
     manager.streamCallbacks = new Set();
     manager.deletedFixedTasks = new Map();
     manager.clearedDeletedFixedTaskKeys = new Set();
@@ -1411,11 +1427,20 @@ describe("Codex task queue gate", function () {
       expect(new Set(providerExecutionIds).size).to.equal(3);
       expect(saveTxCount).to.equal(1);
       expect(persistedProbeCount).to.equal(1);
+      expect(eventLog).to.deep.equal([
+        "planning:done",
+        "luna:done",
+        "acceptance:PASS",
+        "save",
+        "persisted-probe",
+        "complete",
+      ]);
 
       acceptanceValue = "BLOCKED";
       providerCall = 0;
       saveTxCount = 0;
       persistedProbeCount = 0;
+      eventLog.length = 0;
       manager.tasks.set("summary-task-production", {
         id: "summary-task-production",
         itemId: item.id,
@@ -1435,6 +1460,11 @@ describe("Codex task queue gate", function () {
       expect(blockedTask.retryCount).to.equal(0);
       expect(saveTxCount).to.equal(0);
       expect(persistedProbeCount).to.equal(0);
+      expect(eventLog).to.deep.equal([
+        "planning:done",
+        "luna:done",
+        "acceptance:BLOCKED",
+      ]);
       expect(roles.slice(3)).to.deep.equal(["sol", "luna", "sol"]);
       const records = await ledger.readAll();
       const aggregateRecords = records.filter(
