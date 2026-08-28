@@ -763,7 +763,11 @@ export class LLMEndpointManager {
       ollama: "ollamaModel",
       "codex-app-server": "codexModel",
     };
-    const value = String(getPref(keyByProvider[providerType] as any) || "");
+    const value = String(
+      (providerType === "codex-app-server"
+        ? getUserPreference("codexModel")
+        : getPref(keyByProvider[providerType] as any)) || "",
+    );
     if (providerType === "openai-compat" && !value.trim()) {
       return String(getPref("openaiApiModel") || "").trim();
     }

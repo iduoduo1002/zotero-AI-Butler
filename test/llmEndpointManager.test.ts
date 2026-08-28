@@ -224,6 +224,29 @@ describe("LLMEndpointManager", function () {
     expect(endpoint.reasoningEffort).to.equal("low");
   });
 
+  it("uses the Codex role model when codexModel is only a shipped default", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.model).to.equal("gpt-5.6-luna");
+    expect(endpoint.reasoningEffort).to.equal("max");
+  });
+
+  it("preserves an explicit legacy Codex model for the selected role", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+    Zotero.Prefs.set(prefName("codexModel"), "custom-luna-model", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.model).to.equal("custom-luna-model");
+    expect(endpoint.reasoningEffort).to.equal("max");
+  });
+
   it("maps Codex endpoint fields into LLMOptions without dropping Luna max effort", function () {
     const endpoint = LLMEndpointManager.createEndpoint(
       "codex-app-server",

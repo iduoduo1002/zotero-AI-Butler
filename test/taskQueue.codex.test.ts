@@ -851,6 +851,117 @@ describe("Codex task queue gate", function () {
     }
   });
 
+  it("rejects every structured pdf-files Base64 field before ledger or Provider side effects", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const previousProvider = ProviderRegistry.get("codex-app-server");
+    const previousLedgerGetter = LLMService.getCodexTaskLedger;
+    const prefs = new Map<string, unknown>();
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    let ledgerInitCount = 0;
+    let providerCallCount = 0;
+    LLMService.getCodexTaskLedger = (() => {
+      ledgerInitCount += 1;
+      throw new Error(
+        "ledger initialization must not precede input validation",
+      );
+    }) as any;
+    ProviderRegistry.register({
+      id: "codex-app-server",
+      capabilities: {
+        supportsText: true,
+        supportsStreaming: true,
+        supportsPdfBase64: false,
+        maxPdfFiles: 0,
+        supportsSystemPrompt: true,
+        supportedParams: ["stream", "reasoningEffort"],
+      },
+      generateSummary: async () => {
+        providerCallCount += 1;
+        return "unexpected";
+      },
+      chat: async () => {
+        providerCallCount += 1;
+        return "unexpected";
+      },
+      testConnection: async () => "OK",
+    } as any);
+    LLMEndpointManager.saveEndpoints([
+      LLMEndpointManager.createEndpoint("codex-app-server", "sol"),
+    ]);
+    const baseFile = {
+      filePath: "/safe/document.pdf",
+      displayName: "document.pdf",
+      base64Content: "JVBERi0xLjQKprivate",
+    };
+    try {
+      for (const task of ["summary", "chat"] as const) {
+        for (const policy of [undefined, "text"] as const) {
+          for (const textContent of [
+            undefined,
+            "safe extracted text",
+          ] as const) {
+            const content = {
+              kind: "pdf-files" as const,
+              files: [{ ...baseFile, textContent }],
+              ...(policy ? { policy } : {}),
+            };
+            let thrown: Error | undefined;
+            try {
+              if (task === "summary") {
+                await LLMService.generate({
+                  task,
+                  content,
+                  transport: { retry: false },
+                });
+              } else {
+                await LLMService.chat({
+                  content,
+                  conversation: [{ role: "user", content: "Read" }],
+                  transport: { retry: false },
+                });
+              }
+            } catch (error) {
+              thrown =
+                error instanceof Error ? error : new Error(String(error));
+            }
+            expect(
+              thrown?.message,
+              `${task}/${policy || "implicit"}/${textContent ? "with-text" : "base64-only"}`,
+            ).to.match(/endpoint-pdf-unsupported|unsupported/i);
+          }
+        }
+      }
+      expect(ledgerInitCount).to.equal(0);
+      expect(providerCallCount).to.equal(0);
+    } finally {
+      LLMService.getCodexTaskLedger = previousLedgerGetter;
+      if (previousProvider) ProviderRegistry.register(previousProvider);
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
   it("propagates role, policy, item, attachment, and source context per attempt", function () {
     const globalValue = globalThis as any;
     const previousZotero = globalValue.Zotero;

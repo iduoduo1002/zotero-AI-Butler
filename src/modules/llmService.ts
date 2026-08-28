@@ -338,10 +338,18 @@ function assertCodexInputAllowed(
   content: LLMContentInput,
 ): void {
   if (endpoint.providerType !== "codex-app-server") return;
+  const hasStructuredBase64 =
+    content.kind === "pdf-files" &&
+    content.files.some(
+      (file) =>
+        typeof file.base64Content === "string" &&
+        file.base64Content.trim().length > 0,
+    );
   if (
     (content.kind === "legacy" &&
       (content.isBase64 || content.policy === "pdf-base64")) ||
-    content.policy === "pdf-base64"
+    content.policy === "pdf-base64" ||
+    hasStructuredBase64
   ) {
     throw new Error(getString("endpoint-pdf-unsupported"));
   }
