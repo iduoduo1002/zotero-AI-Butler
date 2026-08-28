@@ -21,6 +21,10 @@ export interface CodexExecutionContext {
   itemKey?: string;
   attachmentKey?: string;
   sourceSha256?: string;
+  sourceSha256Verified?: boolean;
+  sourceSha256Provenance?: string;
+  expectedSourceSha256?: string;
+  sourceSha256Mismatch?: boolean;
   threadId?: string;
   turnId?: string;
   approvalPolicy: string;
@@ -31,6 +35,13 @@ export interface CodexExecutionContext {
 export interface CodexTaskContract {
   executionId: string;
   parentExecutionId?: string;
+  taskType: string;
+  outputSchema: {
+    format: string;
+    required: string[];
+  };
+  inputBoundaries: string[];
+  acceptanceDimensions: string[];
   acceptanceCriteria: string[];
   inputSummary: string;
   outputSummary: string;
@@ -48,6 +59,7 @@ export interface CodexExecutionRecord extends CodexExecutionContext {
   attempt?: number;
   requestId?: string;
   providerExecutionId?: string;
+  providerExecutionIds?: string[];
   acceptanceExecutionId?: string;
   outputSummary?: string;
   errorName?: string;
@@ -73,6 +85,20 @@ export interface CodexTaskLedgerOptions {
   idFactory?: () => string;
 }
 
+export class CodexTaskLedgerError extends Error {
+  constructor(
+    public readonly code:
+      | "codex-ledger-invalid-status"
+      | "codex-ledger-invalid-transition"
+      | "codex-ledger-unknown-execution"
+      | "codex-ledger-duplicate-execution",
+    message = code,
+  ) {
+    super(message);
+    this.name = "CodexTaskLedgerError";
+  }
+}
+
 export type CodexTaskLedgerQuery = {
   executionId?: string;
   status?: CodexExecutionStatus;
@@ -94,11 +120,47 @@ const EXECUTION_STATUSES: readonly CodexExecutionStatus[] = [
   "failed",
 ];
 
+const ALLOWED_STATUS_TRANSITIONS: Record<
+  CodexExecutionStatus,
+  readonly CodexExecutionStatus[]
+> = {
+  planned: ["planned", "running", "blocked", "failed"],
+  running: [
+    "running",
+    "awaiting_approval",
+    "passed",
+    "partial",
+    "blocked",
+    "failed",
+  ],
+  awaiting_approval: [
+    "awaiting_approval",
+    "passed",
+    "partial",
+    "blocked",
+    "failed",
+  ],
+  passed: ["passed"],
+  partial: ["partial"],
+  blocked: ["blocked"],
+  failed: ["failed"],
+};
+
+const ledgerPathLocks = new Map<string, Promise<void>>();
+
 function isExecutionStatus(value: unknown): value is CodexExecutionStatus {
   return (
     typeof value === "string" &&
     EXECUTION_STATUSES.includes(value as CodexExecutionStatus)
   );
+}
+
+function assertExecutionStatus(
+  value: unknown,
+): asserts value is CodexExecutionStatus {
+  if (!isExecutionStatus(value)) {
+    throw new CodexTaskLedgerError("codex-ledger-invalid-status");
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -213,16 +275,55 @@ function safeContract(value: unknown): CodexTaskContract | undefined {
   const executionId = safeKey(record.executionId);
   const inputSummary = safeSummary(record.inputSummary);
   const outputSummary = safeSummary(record.outputSummary);
+  const taskType = safeKey(record.taskType);
+  const outputSchemaRecord = asRecord(record.outputSchema);
+  const outputSchemaFormat = safeKey(outputSchemaRecord?.format);
+  const outputSchemaRequired = Array.isArray(outputSchemaRecord?.required)
+    ? outputSchemaRecord.required
+        .map((entry) => safeKey(entry))
+        .filter((entry): entry is string => Boolean(entry))
+        .slice(0, 32)
+    : [];
+  const inputBoundaries = Array.isArray(record.inputBoundaries)
+    ? record.inputBoundaries
+        .map((entry) => safeSummary(entry))
+        .filter((entry): entry is string => Boolean(entry))
+        .slice(0, 32)
+    : [];
+  const acceptanceDimensions = Array.isArray(record.acceptanceDimensions)
+    ? record.acceptanceDimensions
+        .map((entry) => safeSummary(entry))
+        .filter((entry): entry is string => Boolean(entry))
+        .slice(0, 32)
+    : [];
   const acceptanceCriteria = Array.isArray(record.acceptanceCriteria)
     ? record.acceptanceCriteria
         .map((entry) => safeSummary(entry))
         .filter((entry): entry is string => Boolean(entry))
         .slice(0, 32)
     : [];
-  if (!executionId || !inputSummary || !outputSummary) return undefined;
+  if (
+    !executionId ||
+    !taskType ||
+    !outputSchemaFormat ||
+    !outputSchemaRequired.length ||
+    !inputBoundaries.length ||
+    !acceptanceDimensions.length ||
+    !inputSummary ||
+    !outputSummary
+  ) {
+    return undefined;
+  }
   return {
     executionId,
     parentExecutionId: safeKey(record.parentExecutionId),
+    taskType,
+    outputSchema: {
+      format: outputSchemaFormat,
+      required: outputSchemaRequired,
+    },
+    inputBoundaries,
+    acceptanceDimensions,
     acceptanceCriteria,
     inputSummary,
     outputSummary,
@@ -263,6 +364,16 @@ function redactRecord(
     itemKey: safeKey(value.itemKey),
     attachmentKey: safeKey(value.attachmentKey),
     sourceSha256: safeHash(value.sourceSha256),
+    sourceSha256Verified:
+      typeof value.sourceSha256Verified === "boolean"
+        ? value.sourceSha256Verified
+        : undefined,
+    sourceSha256Provenance: safeKey(value.sourceSha256Provenance),
+    expectedSourceSha256: safeHash(value.expectedSourceSha256),
+    sourceSha256Mismatch:
+      typeof value.sourceSha256Mismatch === "boolean"
+        ? value.sourceSha256Mismatch
+        : undefined,
     threadId: safeKey(value.threadId),
     turnId: safeKey(value.turnId),
     approvalPolicy: safePolicy(value.approvalPolicy),
@@ -275,6 +386,12 @@ function redactRecord(
   if (Number.isFinite(attempt) && attempt >= 0) record.attempt = attempt;
   const requestId = safeKey(value.requestId);
   const providerExecutionId = safeKey(value.providerExecutionId);
+  const providerExecutionIds = Array.isArray(value.providerExecutionIds)
+    ? value.providerExecutionIds
+        .map((entry) => safeKey(entry))
+        .filter((entry): entry is string => Boolean(entry))
+        .slice(0, 64)
+    : [];
   const acceptanceExecutionId = safeKey(value.acceptanceExecutionId);
   const outputSummary = safeSummary(value.outputSummary);
   const errorName = safeKey(value.errorName);
@@ -294,6 +411,8 @@ function redactRecord(
       : undefined;
   if (requestId) record.requestId = requestId;
   if (providerExecutionId) record.providerExecutionId = providerExecutionId;
+  if (providerExecutionIds.length > 0)
+    record.providerExecutionIds = providerExecutionIds;
   if (acceptanceExecutionId)
     record.acceptanceExecutionId = acceptanceExecutionId;
   if (outputSummary) record.outputSummary = outputSummary;
@@ -357,7 +476,6 @@ export class CodexTaskLedger {
   private readonly idFactory: () => string;
   private readonly activeRecords = new Map<string, CodexExecutionRecord>();
   private directoryPromise: Promise<void> | undefined;
-  private appendPromise: Promise<void> = Promise.resolve();
 
   constructor(filePath?: string, options?: CodexTaskLedgerOptions);
   constructor(options?: CodexTaskLedgerOptions);
@@ -388,9 +506,13 @@ export class CodexTaskLedger {
     const status =
       typeof statusOrDetails === "string"
         ? statusOrDetails
-        : isExecutionStatus(statusOrDetails.status)
-          ? statusOrDetails.status
-          : "running";
+        : statusOrDetails.status === undefined
+          ? "running"
+          : statusOrDetails.status;
+    assertExecutionStatus(status);
+    if (status !== "planned" && status !== "running") {
+      throw new CodexTaskLedgerError("codex-ledger-invalid-status");
+    }
     const startDetails =
       typeof statusOrDetails === "string"
         ? details
@@ -399,18 +521,24 @@ export class CodexTaskLedger {
       safeKey(context.executionId) ||
       safeKey(startDetails.executionId) ||
       this.idFactory();
-    const record = this.buildRecord(
-      {
-        ...context,
-        ...startDetails,
-        executionId,
-        status,
-      },
-      context,
-    );
-    await this.append(record);
-    this.activeRecords.set(executionId, record);
-    return record;
+    return this.withPathLock(async () => {
+      const existing = await this.readAllUnlocked();
+      if (existing.some((record) => record.executionId === executionId)) {
+        throw new CodexTaskLedgerError("codex-ledger-duplicate-execution");
+      }
+      const record = this.buildRecord(
+        {
+          ...context,
+          ...startDetails,
+          executionId,
+          status,
+        },
+        context,
+      );
+      await this.appendUnlocked(record);
+      this.activeRecords.set(executionId, record);
+      return record;
+    });
   }
 
   async update(
@@ -421,31 +549,40 @@ export class CodexTaskLedger {
     const status =
       typeof statusOrDetails === "string"
         ? statusOrDetails
-        : isExecutionStatus(statusOrDetails.status)
-          ? statusOrDetails.status
-          : "running";
+        : statusOrDetails.status === undefined
+          ? "running"
+          : statusOrDetails.status;
+    assertExecutionStatus(status);
     const updateDetails =
       typeof statusOrDetails === "string"
         ? details
         : { ...statusOrDetails, ...details };
     const id = safeKey(executionId);
-    if (!id) throw new Error(getString("common-unknown-error"));
-    const previous =
-      this.activeRecords.get(id) ||
-      (await this.findLatest({ executionId: id })) ||
-      this.buildRecord({ executionId: id, status }, {});
-    const record = this.buildRecord(
-      {
-        ...previous,
-        ...updateDetails,
-        executionId: id,
-        status,
-      },
-      previous,
-    );
-    await this.append(record);
-    this.activeRecords.set(id, record);
-    return record;
+    if (!id) throw new CodexTaskLedgerError("codex-ledger-unknown-execution");
+    return this.withPathLock(async () => {
+      const previous =
+        this.activeRecords.get(id) ||
+        (await this.findLatestUnlocked({ executionId: id }));
+      if (!previous) {
+        throw new CodexTaskLedgerError("codex-ledger-unknown-execution");
+      }
+      const allowed = ALLOWED_STATUS_TRANSITIONS[previous.status];
+      if (!allowed.includes(status)) {
+        throw new CodexTaskLedgerError("codex-ledger-invalid-transition");
+      }
+      const record = this.buildRecord(
+        {
+          ...previous,
+          ...updateDetails,
+          executionId: id,
+          status,
+        },
+        previous,
+      );
+      await this.appendUnlocked(record);
+      this.activeRecords.set(id, record);
+      return record;
+    });
   }
 
   async complete(
@@ -474,6 +611,10 @@ export class CodexTaskLedger {
   }
 
   async readAll(): Promise<CodexExecutionRecord[]> {
+    return this.withPathLock(() => this.readAllUnlocked());
+  }
+
+  private async readAllUnlocked(): Promise<CodexExecutionRecord[]> {
     await this.ensureDirectory();
     let text: string;
     try {
@@ -534,6 +675,39 @@ export class CodexTaskLedger {
     return records.length > 0 ? records[records.length - 1] : null;
   }
 
+  private async findLatestUnlocked(
+    query: CodexTaskLedgerQuery | string = {},
+  ): Promise<CodexExecutionRecord | null> {
+    const normalizedQuery =
+      typeof query === "string" ? { itemKey: query } : query;
+    const records = await this.readAllUnlocked();
+    const matching = records.filter((record) => {
+      if (
+        normalizedQuery.executionId &&
+        record.executionId !== normalizedQuery.executionId
+      ) {
+        return false;
+      }
+      if (normalizedQuery.status && record.status !== normalizedQuery.status) {
+        return false;
+      }
+      if (
+        normalizedQuery.itemKey &&
+        record.itemKey !== normalizedQuery.itemKey
+      ) {
+        return false;
+      }
+      if (
+        normalizedQuery.attachmentKey &&
+        record.attachmentKey !== normalizedQuery.attachmentKey
+      ) {
+        return false;
+      }
+      return true;
+    });
+    return matching.length > 0 ? matching[matching.length - 1] : null;
+  }
+
   private buildRecord(
     value: Record<string, unknown>,
     fallback: Partial<CodexExecutionContext> | CodexExecutionRecord,
@@ -548,6 +722,14 @@ export class CodexTaskLedger {
       itemKey: value.itemKey ?? fallback.itemKey,
       attachmentKey: value.attachmentKey ?? fallback.attachmentKey,
       sourceSha256: value.sourceSha256 ?? fallback.sourceSha256,
+      sourceSha256Verified:
+        value.sourceSha256Verified ?? fallback.sourceSha256Verified,
+      sourceSha256Provenance:
+        value.sourceSha256Provenance ?? fallback.sourceSha256Provenance,
+      expectedSourceSha256:
+        value.expectedSourceSha256 ?? fallback.expectedSourceSha256,
+      sourceSha256Mismatch:
+        value.sourceSha256Mismatch ?? fallback.sourceSha256Mismatch,
       threadId: value.threadId ?? fallback.threadId,
       turnId: value.turnId ?? fallback.turnId,
       approvalPolicy:
@@ -572,20 +754,35 @@ export class CodexTaskLedger {
     await this.directoryPromise;
   }
 
-  private async append(record: CodexExecutionRecord): Promise<void> {
+  private async appendUnlocked(record: CodexExecutionRecord): Promise<void> {
     const line = `${JSON.stringify(record)}\n`;
-    this.appendPromise = this.appendPromise.then(async () => {
-      await this.ensureDirectory();
-      let separator = "";
-      try {
-        const existing = await this.fileSystem.readTextFile(this.filePath);
-        if (existing && !/\r?\n$/.test(existing)) separator = "\n";
-      } catch {
-        // The append operation creates a missing file.
-      }
-      await this.fileSystem.appendTextFile(this.filePath, separator + line);
+    await this.ensureDirectory();
+    let separator = "";
+    try {
+      const existing = await this.fileSystem.readTextFile(this.filePath);
+      if (existing && !/\r?\n$/.test(existing)) separator = "\n";
+    } catch {
+      // The append operation creates a missing file.
+    }
+    await this.fileSystem.appendTextFile(this.filePath, separator + line);
+  }
+
+  private async withPathLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = ledgerPathLocks.get(this.filePath) || Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    await this.appendPromise;
+    const lockPromise = previous.catch(() => undefined).then(() => gate);
+    ledgerPathLocks.set(this.filePath, lockPromise);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      const current = ledgerPathLocks.get(this.filePath);
+      if (current === lockPromise) ledgerPathLocks.delete(this.filePath);
+    }
   }
 }
 

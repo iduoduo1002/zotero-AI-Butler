@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import {
   CodexTaskLedger,
+  CodexTaskLedgerError,
   type CodexExecutionContext,
   type CodexTaskLedgerFileSystem,
 } from "../src/modules/codexTaskLedger";
@@ -135,5 +136,74 @@ describe("CodexTaskLedger", function () {
       "old-exec",
       "new-exec",
     ]);
+  });
+
+  it("rejects unknown execution updates and terminal-to-running transitions", async function () {
+    const fileSystem = new MemoryLedgerFileSystem();
+    const ledger = new CodexTaskLedger("/tmp/ai-butler/ledger-state.jsonl", {
+      fileSystem,
+      idFactory: () => "terminal-exec",
+    });
+    const started = await ledger.start(context(), "running");
+    await ledger.complete(started.executionId);
+
+    let unknownError: unknown;
+    try {
+      await ledger.update("missing-exec", "running");
+    } catch (error) {
+      unknownError = error;
+    }
+    expect(unknownError).to.be.instanceOf(CodexTaskLedgerError);
+    expect((unknownError as CodexTaskLedgerError).code).to.equal(
+      "codex-ledger-unknown-execution",
+    );
+
+    let transitionError: unknown;
+    try {
+      await ledger.update(started.executionId, "running");
+    } catch (error) {
+      transitionError = error;
+    }
+    expect(transitionError).to.be.instanceOf(CodexTaskLedgerError);
+    expect((transitionError as CodexTaskLedgerError).code).to.equal(
+      "codex-ledger-invalid-transition",
+    );
+
+    let invalidStatusError: unknown;
+    try {
+      await ledger.update(started.executionId, { status: "not-a-status" });
+    } catch (error) {
+      invalidStatusError = error;
+    }
+    expect(invalidStatusError).to.be.instanceOf(CodexTaskLedgerError);
+    expect((invalidStatusError as CodexTaskLedgerError).code).to.equal(
+      "codex-ledger-invalid-status",
+    );
+  });
+
+  it("serializes concurrent instances and retains a malformed tail", async function () {
+    const fileSystem = new MemoryLedgerFileSystem();
+    const first = new CodexTaskLedger("/tmp/ai-butler/concurrent.jsonl", {
+      fileSystem,
+      idFactory: () => "first-exec",
+    });
+    const second = new CodexTaskLedger("/tmp/ai-butler/concurrent.jsonl", {
+      fileSystem,
+      idFactory: () => "second-exec",
+    });
+
+    await Promise.all([
+      first.start(context({ itemKey: "ITEM-FIRST" }), "running"),
+      second.start(context({ itemKey: "ITEM-SECOND" }), "running"),
+    ]);
+    fileSystem.content += '{"truncated":';
+    await first.update("first-exec", "awaiting_approval");
+
+    const records = await first.readAll();
+    expect(records.map((record) => record.executionId)).to.include.members([
+      "first-exec",
+      "second-exec",
+    ]);
+    expect(records.at(-1)?.status).to.equal("awaiting_approval");
   });
 });

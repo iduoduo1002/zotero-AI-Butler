@@ -171,7 +171,7 @@ export class NoteGenerator {
         candidate: NoteWriteCandidate,
       ) => Promise<boolean | void>;
     },
-  ): Promise<{ note: Zotero.Item; content: string }> {
+  ): Promise<{ note: Zotero.Item; content: string; response?: LLMResponse }> {
     if (!isAiSourceItem(item)) {
       throw new Error(getInvalidAiSourceItemMessage());
     }
@@ -182,6 +182,7 @@ export class NoteGenerator {
     let fullContent = "";
     let llmMetadata: LLMNoteMetadata | null;
     let noteContentOverride: string | null = null;
+    let generatedResponse: LLMResponse | undefined;
 
     try {
       throwIfAborted(options?.abortSignal);
@@ -347,6 +348,7 @@ export class NoteGenerator {
           item,
           prefMode,
           progressCallback,
+          options?.abortSignal,
         );
         pdfContent = extracted.content;
         isBase64 = extracted.isBase64;
@@ -455,6 +457,7 @@ export class NoteGenerator {
           });
         }
         fullContent = response.text;
+        generatedResponse = response;
         llmMetadata = LLMNoteMetadataService.fromResponse("summary", response);
       } else {
         const deepReadResult = await this.generateDeepReadContent({
@@ -476,6 +479,7 @@ export class NoteGenerator {
         note = deepReadResult.note;
         fullContent = deepReadResult.content;
         noteContentOverride = deepReadResult.noteHtml;
+        generatedResponse = deepReadResult.response;
         llmMetadata = LLMNoteMetadataService.fromResponse(
           "summary",
           deepReadResult.response,
@@ -487,7 +491,7 @@ export class NoteGenerator {
           getString("note-generator-deep-read-note-updated"),
           100,
         );
-        return { note, content: fullContent };
+        return { note, content: fullContent, response: generatedResponse };
       }
 
       // Step 3: create or update note
@@ -527,7 +531,13 @@ export class NoteGenerator {
           metadata: llmMetadata,
         });
         if (gateResult === false) {
-          throw new Error(getString("common-unknown-error"));
+          const error = new Error(
+            getString("common-unknown-error"),
+          ) as Error & {
+            code?: string;
+          };
+          error.code = "codex-note-write-gate-blocked";
+          throw error;
         }
       }
       throwIfAborted(options?.abortSignal);
@@ -606,7 +616,7 @@ export class NoteGenerator {
       }
 
       // 返回创建的笔记对象和内容
-      return { note, content: fullContent };
+      return { note, content: fullContent, response: generatedResponse };
     } catch (error: any) {
       // 记录错误日志
       ztoolkit.log(`[AI Butler] 为文献"${itemTitle}"生成笔记时出错:`, error);
@@ -659,13 +669,17 @@ export class NoteGenerator {
       progress: number,
       meta?: TaskProgressMeta,
     ) => void,
+    abortSignal?: LLMAbortSignal,
   ): Promise<{ content: string; isBase64: boolean }> {
+    throwIfAborted(abortSignal);
     const extracted = await ContentExtractor.extractAnalyzableContentFromItem(
       item,
       mode === "base64",
       mode,
       progressCallback,
+      abortSignal,
     );
+    throwIfAborted(abortSignal);
     if (extracted.isBase64) {
       return { content: extracted.content, isBase64: true };
     }
@@ -1428,10 +1442,17 @@ export class NoteGenerator {
       template,
       planned,
     );
-    const note = shouldResume
-      ? (params.existing as Zotero.Item)
-      : params.noteWriteGate
-        ? this.createUnsavedDeepReadNote(params.item, skeleton)
+    const note = params.noteWriteGate
+      ? this.createUnsavedDeepReadNote(
+          params.item,
+          shouldResume
+            ? ((params.existing as any)?.getNote?.() as string) ||
+                params.existingHtml ||
+                skeleton
+            : skeleton,
+        )
+      : shouldResume
+        ? (params.existing as Zotero.Item)
         : await AiNoteService.saveGeneratedNote({
             item: params.item,
             kind: "deepRead",
@@ -1439,7 +1460,7 @@ export class NoteGenerator {
             existing: params.existing,
             policy: params.policy === "append" ? "append" : "overwrite",
           });
-    const deferNoteWrite = Boolean(params.noteWriteGate && !shouldResume);
+    const deferNoteWrite = Boolean(params.noteWriteGate);
 
     if (shouldResume) {
       const currentHtml = ((note as any).getNote?.() as string) || "";
@@ -1808,7 +1829,11 @@ export class NoteGenerator {
         metadata: gateMetadata,
       });
       if (gateResult === false) {
-        throw new Error(getString("common-unknown-error"));
+        const error = new Error(getString("common-unknown-error")) as Error & {
+          code?: string;
+        };
+        error.code = "codex-note-write-gate-blocked";
+        throw error;
       }
       throwIfAborted(params.abortSignal);
       const persistedHtml = gateMetadata
@@ -1877,12 +1902,18 @@ export class NoteGenerator {
     item: Zotero.Item,
     html: string,
   ): Zotero.Item {
-    const note = new Zotero.Item("note");
-    note.libraryID = item.libraryID;
-    note.parentID = item.id;
-    note.setNote(html);
-    note.addTag(AiNoteService.getTag("deepRead"));
-    return note;
+    let currentHtml = html;
+    return {
+      id: 0,
+      libraryID: item.libraryID,
+      parentID: item.id,
+      getNote: () => currentHtml,
+      setNote: (nextHtml: string) => {
+        currentHtml = nextHtml;
+      },
+      saveTx: async () => undefined,
+      addTag: () => undefined,
+    } as unknown as Zotero.Item;
   }
 
   private static getActiveDeepReadTemplate(): MultiRoundPromptTemplate {

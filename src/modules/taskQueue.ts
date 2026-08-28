@@ -39,179 +39,26 @@ import { LLMEndpointManager, type LLMEndpoint } from "./llmEndpointManager";
 import {
   CodexTaskLedger,
   type CodexArtifactProbeSummary,
-  type CodexExecutionContext,
   type CodexTaskContract,
 } from "./codexTaskLedger";
 
 export type CodexQueueAcceptance = "PASS" | "PARTIAL" | "BLOCKED";
 
-export type CodexQueueGateStatus = "passed" | "partial" | "blocked" | "failed";
-
-export type CodexQueueLunaResult = {
-  executionId?: string;
-  outputSummary?: string;
-  artifactSummary?: string;
-};
-
-export interface CodexQueueGateOptions {
-  ledger: CodexTaskLedger;
-  solContext: Partial<CodexExecutionContext>;
-  lunaContext: Partial<CodexExecutionContext>;
-  contract?: CodexTaskContract;
-  runLuna: (contract: CodexTaskContract) => Promise<CodexQueueLunaResult>;
-  probeArtifact: () => Promise<CodexArtifactProbeSummary>;
-  writeFinalNote: () => Promise<void>;
-}
-
-export interface CodexQueueGateResult {
-  status: CodexQueueGateStatus;
-  acceptance: CodexQueueAcceptance;
-  solExecutionId: string;
-  lunaExecutionId?: string;
-  artifactProbe?: CodexArtifactProbeSummary;
-  outputSummary?: string;
-}
-
-/**
- * Execute the small, explicit Sol/Luna contract gate used by Codex queue
- * tasks.  The callbacks deliberately keep provider and Zotero concerns out of
- * this coordinator, which also makes the final-note safety boundary testable.
- */
-export async function runCodexTaskGate(
-  options: CodexQueueGateOptions,
-): Promise<CodexQueueGateResult> {
-  const solExecution = await options.ledger.start(
-    {
-      ...options.solContext,
-      executionId:
-        options.solContext.executionId || options.contract?.executionId,
-    },
-    "planned",
-    options.contract ? { contract: options.contract } : {},
-  );
-
-  if (!options.contract) {
-    await options.ledger.update(solExecution.executionId, "blocked", {
-      outputSummary: "Sol contract missing; Luna execution was not started",
-      artifactProbe: { exists: false, reason: "contract-missing" },
-    });
-    return {
-      status: "blocked",
-      acceptance: "BLOCKED",
-      solExecutionId: solExecution.executionId,
-      artifactProbe: { exists: false, reason: "contract-missing" },
-    };
-  }
-
-  await options.ledger.update(solExecution.executionId, "running", {
-    contract: options.contract,
-  });
-
-  const lunaExecution = await options.ledger.start(
-    {
-      ...options.lunaContext,
-      parentExecutionId: solExecution.executionId,
-    },
-    "running",
-    { contract: options.contract },
-  );
-
-  let lunaResult: CodexQueueLunaResult;
-  try {
-    lunaResult = await options.runLuna(options.contract);
-  } catch (error) {
-    await options.ledger.fail(lunaExecution.executionId, error, {
-      outputSummary: "Luna execution failed",
-    });
-    await options.ledger.update(solExecution.executionId, "blocked", {
-      outputSummary: "Sol acceptance blocked because Luna failed",
-      artifactProbe: { exists: false, reason: "luna-failed" },
-    });
-    return {
-      status: "blocked",
-      acceptance: "BLOCKED",
-      solExecutionId: solExecution.executionId,
-      lunaExecutionId: lunaExecution.executionId,
-      artifactProbe: { exists: false, reason: "luna-failed" },
-    };
-  }
-
-  let artifactProbe: CodexArtifactProbeSummary;
-  try {
-    artifactProbe = await options.probeArtifact();
-  } catch {
-    artifactProbe = {
-      exists: false,
-      probeFailed: true,
-      reason: "probe-failed",
-    };
-  }
-
-  const outputSummary =
-    lunaResult.outputSummary ||
-    lunaResult.artifactSummary ||
-    "Luna output received";
-  const probePassed = artifactProbe.exists && !artifactProbe.probeFailed;
-  if (!probePassed) {
-    await options.ledger.update(lunaExecution.executionId, "blocked", {
-      outputSummary,
-      artifactProbe,
-    });
-    await options.ledger.update(solExecution.executionId, "blocked", {
-      outputSummary: "Sol acceptance blocked by artifact probe",
-      artifactProbe,
-    });
-    return {
-      status: "blocked",
-      acceptance: "BLOCKED",
-      solExecutionId: solExecution.executionId,
-      lunaExecutionId: lunaExecution.executionId,
-      artifactProbe,
-      outputSummary,
-    };
-  }
-
-  await options.ledger.complete(lunaExecution.executionId, {
-    outputSummary,
-    artifactProbe,
-  });
-  await options.ledger.complete(solExecution.executionId, {
-    outputSummary:
-      "Sol acceptance PASS: Luna output and artifact probe verified",
-    artifactProbe,
-  });
-
-  try {
-    await options.writeFinalNote();
-  } catch (error) {
-    await options.ledger.fail(solExecution.executionId, error, {
-      outputSummary: "Final note write failed after acceptance",
-      artifactProbe,
-    });
-    return {
-      status: "failed",
-      acceptance: "PASS",
-      solExecutionId: solExecution.executionId,
-      lunaExecutionId: lunaExecution.executionId,
-      artifactProbe,
-      outputSummary,
-    };
-  }
-
-  return {
-    status: "passed",
-    acceptance: "PASS",
-    solExecutionId: solExecution.executionId,
-    lunaExecutionId: lunaExecution.executionId,
-    artifactProbe,
-    outputSummary,
-  };
-}
+let codexPlanSequence = 0;
 
 export function isCodexImageSummaryUnsupported(
   endpoint?: Pick<LLMEndpoint, "providerType"> | null,
 ): boolean {
   return endpoint?.providerType === "codex-app-server";
+}
+
+function digestBoundedText(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function logTaskQueue(...args: Parameters<ZToolkit["log"]>): void {
@@ -225,44 +72,38 @@ function logTaskQueue(...args: Parameters<ZToolkit["log"]>): void {
 }
 
 function codexImageSummaryUnsupportedError(): Error & {
+  code: string;
   suppressTaskRetry: boolean;
 } {
-  const error = new Error("codex-image-summary-unsupported");
+  const error = new Error("codex-image-summary-unsupported") as Error & {
+    code?: string;
+    suppressTaskRetry?: boolean;
+  };
+  error.code = "codex-image-summary-unsupported";
   (error as Error & { suppressTaskRetry?: boolean }).suppressTaskRetry = true;
-  return error as Error & { suppressTaskRetry: boolean };
+  return error as Error & { code: string; suppressTaskRetry: boolean };
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
-  const trimmed = text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "");
+  let trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) trimmed = fenced[1].trim();
   try {
     const parsed = JSON.parse(trimmed);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : null;
   } catch {
-    const match = trimmed.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try {
-      const parsed = JSON.parse(match[0]);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : null;
-    } catch {
-      return null;
-    }
+    return null;
   }
 }
 
 export function parseCodexSolAcceptance(text: string): CodexQueueAcceptance {
   const parsed = parseJsonObject(text);
-  const value = String(parsed?.acceptance || parsed?.status || text)
-    .trim()
-    .toUpperCase();
-  if (value.includes("PASS")) return "PASS";
-  if (value.includes("PARTIAL")) return "PARTIAL";
+  const value = parsed?.acceptance;
+  if (value === "PASS") return "PASS";
+  if (value === "PARTIAL") return "PARTIAL";
+  if (value === "BLOCKED") return "BLOCKED";
   return "BLOCKED";
 }
 
@@ -275,41 +116,203 @@ export function parseCodexSolContract(
   if (!parsed) return null;
   const criteria = Array.isArray(parsed.acceptanceCriteria)
     ? parsed.acceptanceCriteria
-        .map((entry) => String(entry || "").trim())
-        .filter(Boolean)
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
     : [];
-  const outputSummary = String(parsed.outputSummary || "").trim();
-  if (!criteria.length || !outputSummary) return null;
+  const outputSummary =
+    typeof parsed.outputSummary === "string" ? parsed.outputSummary.trim() : "";
+  const taskType =
+    typeof parsed.taskType === "string" ? parsed.taskType.trim() : "";
+  const outputSchema =
+    parsed.outputSchema &&
+    typeof parsed.outputSchema === "object" &&
+    !Array.isArray(parsed.outputSchema)
+      ? (parsed.outputSchema as Record<string, unknown>)
+      : null;
+  const outputFormat =
+    typeof outputSchema?.format === "string" ? outputSchema.format.trim() : "";
+  const outputRequired = Array.isArray(outputSchema?.required)
+    ? outputSchema.required
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    : [];
+  const inputBoundaries = Array.isArray(parsed.inputBoundaries)
+    ? parsed.inputBoundaries
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    : [];
+  const acceptanceDimensions = Array.isArray(parsed.acceptanceDimensions)
+    ? parsed.acceptanceDimensions
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    : [];
+  if (
+    !criteria.length ||
+    !outputSummary ||
+    !taskType ||
+    !outputFormat ||
+    !outputRequired.length ||
+    !inputBoundaries.length ||
+    !acceptanceDimensions.length
+  ) {
+    return null;
+  }
   return {
     executionId,
     parentExecutionId:
       typeof parsed.parentExecutionId === "string"
         ? parsed.parentExecutionId.trim() || undefined
         : undefined,
+    taskType,
+    outputSchema: {
+      format: outputFormat,
+      required: outputRequired.slice(0, 32),
+    },
+    inputBoundaries: inputBoundaries.slice(0, 32),
+    acceptanceDimensions: acceptanceDimensions.slice(0, 32),
     acceptanceCriteria: criteria.slice(0, 32),
     inputSummary,
     outputSummary,
   };
 }
 
+export type CodexSolCriterionResult = {
+  criterion: string;
+  verdict: CodexQueueAcceptance;
+  evidence: unknown;
+};
+
+export type CodexSolAcceptanceDetails = {
+  acceptance: CodexQueueAcceptance;
+  criteria: CodexSolCriterionResult[];
+};
+
+function parseCodexSolAcceptanceDetails(
+  text: string,
+  requiredCriteria: string[],
+): CodexSolAcceptanceDetails {
+  const parsed = parseJsonObject(text);
+  const acceptance = parseCodexSolAcceptance(text);
+  if (!parsed || acceptance === "BLOCKED") {
+    return { acceptance: "BLOCKED", criteria: [] };
+  }
+  const rawCriteria = Array.isArray(parsed.criteria)
+    ? parsed.criteria
+    : Array.isArray(parsed.criterionEvidence)
+      ? parsed.criterionEvidence
+      : [];
+  const criteria = rawCriteria
+    .map((entry): CodexSolCriterionResult | null => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return null;
+      }
+      const record = entry as Record<string, unknown>;
+      const criterion =
+        typeof record.criterion === "string" ? record.criterion.trim() : "";
+      const verdict = record.verdict;
+      const evidence = record.evidence;
+      const hasEvidence =
+        (typeof evidence === "string" && evidence.trim().length > 0) ||
+        (evidence &&
+          typeof evidence === "object" &&
+          !Array.isArray(evidence) &&
+          Object.keys(evidence).length > 0);
+      if (
+        !criterion ||
+        (verdict !== "PASS" &&
+          verdict !== "PARTIAL" &&
+          verdict !== "BLOCKED") ||
+        !hasEvidence
+      ) {
+        return null;
+      }
+      return { criterion, verdict, evidence };
+    })
+    .filter((entry): entry is CodexSolCriterionResult => Boolean(entry));
+  const requiredSet = new Set(requiredCriteria);
+  const actualSet = new Set(criteria.map((entry) => entry.criterion));
+  const allCriteriaPresent =
+    criteria.length === requiredCriteria.length &&
+    requiredSet.size === actualSet.size &&
+    Array.from(requiredSet).every((criterion) => actualSet.has(criterion));
+  const acceptanceConsistent =
+    acceptance !== "PASS" ||
+    criteria.every((entry) => entry.verdict === "PASS");
+  return allCriteriaPresent && acceptanceConsistent
+    ? { acceptance, criteria }
+    : { acceptance: "BLOCKED", criteria };
+}
+
+type AttachmentHashResult = {
+  hash?: string;
+  verified: boolean;
+  provenance: string;
+  expected?: string;
+  mismatch?: boolean;
+};
+
 async function computeAttachmentSha256(
   attachment: Zotero.Item | undefined,
-): Promise<string | undefined> {
-  if (!attachment) return undefined;
+  expectedHash?: string,
+  abortSignal?: LLMAbortSignal,
+): Promise<AttachmentHashResult> {
+  const expected =
+    typeof expectedHash === "string" && /^[a-f0-9]{64}$/i.test(expectedHash)
+      ? expectedHash.toLowerCase()
+      : undefined;
+  if (!attachment) {
+    return {
+      verified: false,
+      provenance: expected ? "expected-unverified" : "unavailable",
+      expected,
+    };
+  }
   try {
+    throwIfAbortedForQueue(abortSignal);
     const filePath = await attachment.getFilePathAsync?.();
     const io = (globalThis as any).IOUtils;
     const subtle = (globalThis as any).crypto?.subtle;
-    if (!filePath || typeof io?.read !== "function" || !subtle)
-      return undefined;
+    if (!filePath || typeof io?.read !== "function" || !subtle) {
+      return {
+        verified: false,
+        provenance: expected ? "expected-unverified" : "unavailable",
+        expected,
+      };
+    }
+    throwIfAbortedForQueue(abortSignal);
     const bytes = await io.read(filePath);
+    throwIfAbortedForQueue(abortSignal);
     const digest = await subtle.digest("SHA-256", bytes);
-    return Array.from(new Uint8Array(digest))
+    const hash = Array.from(new Uint8Array(digest))
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
-  } catch {
-    return undefined;
+    return {
+      hash,
+      verified: !expected || hash === expected,
+      provenance: "attachment-bytes",
+      expected,
+      mismatch: Boolean(expected && hash !== expected),
+    };
+  } catch (error) {
+    throwIfAbortedForQueue(abortSignal);
+    return {
+      verified: false,
+      provenance: expected ? "expected-unverified" : "unavailable",
+      expected,
+    };
   }
+}
+
+function throwIfAbortedForQueue(signal?: LLMAbortSignal): void {
+  if (!signal) return;
+  if (signal.aborted) {
+    throw new Error(getString("provider-error-aborted"));
+  }
+  signal.throwIfAborted?.();
 }
 
 /** 旧版本已持久化的无 PDF 附件错误标识。 */
@@ -460,6 +463,8 @@ export type TaskType =
 
 export type TaskCreationSource = "auto" | "manual";
 
+export type CodexDecision = "PASS" | "PARTIAL" | "BLOCKED";
+
 export interface TaskOptions {
   summaryMode?: string;
   forceOverwrite?: boolean;
@@ -545,6 +550,10 @@ export interface TaskItem {
   targetedNoteTitle?: string;
   targetedSelectedTableEntries?: string[];
   targetedAppendedTableEntries?: string[];
+  /** Codex queue decision; persisted so PARTIAL/BLOCKED are not retried as ordinary tasks. */
+  codexDecision?: CodexDecision;
+  /** Stable machine-readable failure code for UI and persistence. */
+  failureCode?: string;
 }
 
 export function getSummaryTaskId(itemId: number): string {
@@ -639,6 +648,10 @@ type CodexQueueExecution = {
   itemKey: string;
   attachmentKey?: string;
   sourceSha256?: string;
+  sourceSha256Verified?: boolean;
+  sourceSha256Provenance?: string;
+  expectedSourceSha256?: string;
+  sourceSha256Mismatch?: boolean;
   probe?: CodexArtifactProbeSummary;
   decision?: CodexQueueAcceptance;
 };
@@ -891,6 +904,8 @@ export class TaskQueueManager {
     task.progress = 0;
     task.error = undefined;
     task.errorDetails = undefined;
+    task.codexDecision = undefined;
+    task.failureCode = undefined;
     task.retryCount = 0;
     task.startedAt = undefined;
     task.completedAt = undefined;
@@ -1333,6 +1348,10 @@ export class TaskQueueManager {
       this.notifyComplete(taskId, true);
     } catch (error: any) {
       // 任务失败
+      if (typeof error?.code === "string" && error.code.startsWith("codex-")) {
+        task.codexDecision = "BLOCKED";
+        task.failureCode = error.code;
+      }
       task.error = this.getTaskErrorMessage(error);
       task.errorDetails = this.buildTaskErrorDetails(task, error);
       task.workflowStage = getString("progress-failed");
@@ -2577,26 +2596,56 @@ export class TaskQueueManager {
     const itemKey = String(
       task.options?.itemKey || (item as any).key || `item-${item.id}`,
     ).trim();
-    let attachmentKey = task.options?.attachmentKey;
-    let sourceAttachment: Zotero.Item | undefined;
-    if (!attachmentKey) {
-      try {
-        const attachments = await PDFExtractor.getAllPdfAttachments(item);
-        sourceAttachment = attachments[0];
-        attachmentKey = String(sourceAttachment?.key || "").trim() || undefined;
-      } catch {
-        attachmentKey = undefined;
-      }
-    }
-    let sourceSha256 =
-      task.options?.sourceSha256 &&
+    const expectedSourceSha256 =
+      typeof task.options?.sourceSha256 === "string" &&
       /^[a-f0-9]{64}$/i.test(task.options.sourceSha256)
         ? task.options.sourceSha256.toLowerCase()
         : undefined;
-    if (!sourceSha256)
-      sourceSha256 = await computeAttachmentSha256(sourceAttachment);
-    const planId = `sol-plan-${task.id}-${Date.now().toString(36)}`;
+    let attachmentKey = task.options?.attachmentKey;
+    let sourceAttachment: Zotero.Item | undefined;
+    try {
+      throwIfAbortedForQueue(abortSignal);
+      const attachments = await PDFExtractor.getAllPdfAttachments(item);
+      throwIfAbortedForQueue(abortSignal);
+      sourceAttachment =
+        attachments.find(
+          (candidate) =>
+            attachmentKey &&
+            String((candidate as any).key || "") === attachmentKey,
+        ) || attachments[0];
+      attachmentKey =
+        String(sourceAttachment?.key || "").trim() || attachmentKey;
+    } catch (error) {
+      if (abortSignal?.aborted) throw error;
+      attachmentKey = attachmentKey || undefined;
+    }
+    const sourceHash = await computeAttachmentSha256(
+      sourceAttachment,
+      expectedSourceSha256,
+      abortSignal,
+    );
+    const sourceSha256 = sourceHash.hash;
+    codexPlanSequence += 1;
+    const planId = `sol-plan-${task.id}-${Date.now().toString(36)}-${codexPlanSequence}`;
     const inputSummary = `Zotero item ${itemKey}${attachmentKey ? ` with attachment ${attachmentKey}` : ""}`;
+    const taskType = task.taskType || "summary";
+    const taskSpec = {
+      taskType,
+      outputSchema: {
+        format: "markdown",
+        required: ["summary", "evidence"],
+      },
+      inputBoundaries: [
+        "only the selected Zotero item and attachment",
+        "do not include PDF body, Base64, credentials, or absolute paths in ledger records",
+        "do not perform Zotero writes; the queue owns final note persistence",
+      ],
+      acceptanceDimensions: [
+        "candidate contains the requested bounded output",
+        "each acceptance criterion has explicit evidence",
+        "artifact probe succeeds before final note persistence",
+      ],
+    };
     const ledger = LLMService.getCodexTaskLedger();
     const policyLabel = (value: unknown): string =>
       typeof value === "string" && value.trim() ? value.trim() : "configured";
@@ -2609,6 +2658,10 @@ export class TaskQueueManager {
         itemKey,
         attachmentKey,
         sourceSha256,
+        sourceSha256Verified: sourceHash.verified,
+        sourceSha256Provenance: sourceHash.provenance,
+        expectedSourceSha256: sourceHash.expected,
+        sourceSha256Mismatch: sourceHash.mismatch,
         approvalPolicy: policyLabel(endpoint.approvalPolicy),
         sandboxPolicy: policyLabel(endpoint.sandboxPolicy),
         networkAccess: endpoint.networkAccess === true,
@@ -2616,21 +2669,34 @@ export class TaskQueueManager {
       "planned",
       {},
     );
+    if (sourceHash.mismatch) {
+      const error = new Error("codex-source-sha256-mismatch") as Error & {
+        code?: string;
+        suppressTaskRetry?: boolean;
+      };
+      error.code = "codex-source-sha256-mismatch";
+      error.suppressTaskRetry = true;
+      await ledger.fail(sol.executionId, error, {
+        errorCode: error.code,
+        outputSummary: "Attachment SHA-256 did not match the expected hash",
+      });
+      throw error;
+    }
     let contract: CodexTaskContract;
     let planningExecutionId: string | undefined;
     try {
       const planningResponse = await LLMService.generate({
         task: "custom",
         prompt:
-          "You are Sol, the commander. Create a strict JSON task contract for a bounded Luna execution. Return only JSON with acceptanceCriteria (non-empty string array) and outputSummary (string). Do not include source document text.",
-        content: { kind: "text", text: inputSummary },
+          "You are Sol, the commander. Create a strict JSON task contract for a bounded Luna execution. The input is a structured task specification. Return only JSON containing taskType, outputSchema, inputBoundaries, acceptanceDimensions, acceptanceCriteria (non-empty string array), and outputSummary (string). Do not include source document text or credentials.",
+        content: { kind: "text", text: JSON.stringify(taskSpec) },
         transport: { retry: false, abortSignal },
         metadata: {
           role: "sol",
           itemKey,
           attachmentKey,
           sourceSha256,
-          parentExecutionId: task.id,
+          parentExecutionId: planId,
         },
       });
       planningExecutionId = planningResponse.executionId;
@@ -2642,6 +2708,9 @@ export class TaskQueueManager {
       await ledger.update(sol.executionId, "running", {
         contract,
         providerExecutionId: planningExecutionId,
+        providerExecutionIds: planningExecutionId
+          ? [planningExecutionId]
+          : undefined,
         outputSummary: "Sol planning turn produced a valid contract",
       });
     } catch (error) {
@@ -2679,6 +2748,10 @@ export class TaskQueueManager {
       itemKey,
       attachmentKey,
       sourceSha256,
+      sourceSha256Verified: sourceHash.verified,
+      sourceSha256Provenance: sourceHash.provenance,
+      expectedSourceSha256: sourceHash.expected,
+      sourceSha256Mismatch: sourceHash.mismatch,
     };
   }
 
@@ -2686,21 +2759,59 @@ export class TaskQueueManager {
     execution: CodexQueueExecution,
     candidate: { html: string; content: string },
     abortSignal?: LLMAbortSignal,
-  ): Promise<{ acceptance: CodexQueueAcceptance; executionId?: string }> {
+  ): Promise<CodexSolAcceptanceDetails & { executionId?: string }> {
+    try {
+      await execution.ledger.update(
+        execution.lunaExecutionId,
+        "awaiting_approval",
+        {
+          outputSummary: "Luna candidate awaiting Sol acceptance",
+          artifactProbe: execution.probe,
+        },
+      );
+      await execution.ledger.update(
+        execution.solExecutionId,
+        "awaiting_approval",
+        {
+          outputSummary: "Sol acceptance is checking the bounded candidate",
+          artifactProbe: execution.probe,
+        },
+      );
+    } catch (error) {
+      logTaskQueue(
+        "Codex queue ledger awaiting-approval update failed:",
+        error,
+      );
+    }
     const probe = execution.probe || { exists: false, reason: "not-probed" };
+    const candidateExcerpt = candidate.content.slice(0, 4000);
+    const candidateDigest = digestBoundedText(candidate.content);
+    const criterionEvidence = execution.contract.acceptanceCriteria.map(
+      (criterion) => ({
+        criterion,
+        evidence: {
+          candidateDigest,
+          candidateNonEmpty: candidate.content.trim().length > 0,
+          artifactProbe: probe,
+          headingCount: (candidate.html.match(/<h[1-6]\b/gi) || []).length,
+        },
+      }),
+    );
     const evidence = JSON.stringify({
       contract: execution.contract,
       candidate: {
+        candidateExcerpt,
+        candidateDigest,
         characterCount: candidate.content.length,
         htmlCharacterCount: candidate.html.length,
-        headingCount: (candidate.html.match(/<h[1-6]\b/gi) || []).length,
       },
       artifactProbe: probe,
+      criterionEvidence,
     });
     const response = await LLMService.generate({
       task: "custom",
       prompt:
-        "You are Sol performing independent acceptance. Return only JSON with acceptance equal to PASS, PARTIAL, or BLOCKED. Accept only if the Luna candidate is non-empty and the artifact probe is successful.",
+        "You are Sol performing independent acceptance. Return only a JSON object with acceptance exactly PASS, PARTIAL, or BLOCKED and criteria containing one object for every contract acceptance criterion. Each criteria object must contain the exact criterion, verdict exactly PASS/PARTIAL/BLOCKED, and non-empty evidence. Accept PASS only when every criterion and the artifact probe pass. The candidate excerpt is bounded and may be incomplete; do not infer absent evidence.",
       content: { kind: "text", text: evidence },
       transport: { retry: false, abortSignal },
       metadata: {
@@ -2709,10 +2820,46 @@ export class TaskQueueManager {
         itemKey: execution.itemKey,
         attachmentKey: execution.attachmentKey,
         sourceSha256: execution.sourceSha256,
+        codexContract: execution.contract,
       },
     });
+    const details = parseCodexSolAcceptanceDetails(
+      response.text,
+      execution.contract.acceptanceCriteria,
+    );
+    try {
+      const previous = await execution.ledger.findLatest({
+        executionId: execution.solExecutionId,
+      });
+      const providerExecutionIds = Array.from(
+        new Set(
+          [
+            ...(previous?.providerExecutionIds || []),
+            previous?.providerExecutionId,
+            response.executionId,
+          ].filter((value): value is string => Boolean(value)),
+        ),
+      );
+      await execution.ledger.update(
+        execution.solExecutionId,
+        "awaiting_approval",
+        {
+          outputSummary: "Sol acceptance returned bounded criterion evidence",
+          acceptanceExecutionId: response.executionId,
+          providerExecutionId:
+            previous?.providerExecutionId || response.executionId,
+          providerExecutionIds,
+        },
+      );
+    } catch (error) {
+      logTaskQueue(
+        "Codex queue ledger acceptance linkage update failed:",
+        error,
+      );
+    }
     return {
-      acceptance: parseCodexSolAcceptance(response.text),
+      acceptance: details.acceptance,
+      criteria: details.criteria,
       executionId: response.executionId,
     };
   }
@@ -2981,8 +3128,11 @@ export class TaskQueueManager {
           detail: getString("task-detail-checking-pdf-attachment"),
         },
       );
-      const hasAnalyzable =
-        await ContentExtractor.hasAnalyzableAttachment(item);
+      const hasAnalyzable = await ContentExtractor.hasAnalyzableAttachment(
+        item,
+        abortController.signal,
+      );
+      throwIfAbortedForQueue(abortController.signal);
       if (!hasAnalyzable) {
         throw new Error(getNoPdfErrorMessage());
       }
@@ -3006,10 +3156,11 @@ export class TaskQueueManager {
         noteOptions.retry = false;
         noteOptions.metadata = {
           role: "luna",
-          parentExecutionId: codexExecution.solExecutionId,
+          parentExecutionId: codexExecution.lunaExecutionId,
           itemKey: codexExecution.itemKey,
           attachmentKey: codexExecution.attachmentKey,
           sourceSha256: codexExecution.sourceSha256,
+          codexContract: codexExecution.contract,
         };
         noteOptions.noteWriteGate = async (candidate) => {
           const candidateProbe = await TaskArtifacts.probeCandidate(
@@ -3019,6 +3170,8 @@ export class TaskQueueManager {
           );
           codexExecution!.probe = candidateProbe;
           if (!candidateProbe.exists || candidateProbe.probeFailed) {
+            task.codexDecision = "BLOCKED";
+            task.failureCode = "codex-candidate-probe-failed";
             await this.blockCodexQueueExecution(
               codexExecution,
               candidateProbe.reason || "candidate-probe-failed",
@@ -3026,12 +3179,38 @@ export class TaskQueueManager {
             );
             return false;
           }
+          try {
+            await codexExecution!.ledger.update(
+              codexExecution!.lunaExecutionId,
+              "awaiting_approval",
+              {
+                outputSummary: "Luna candidate awaiting Sol acceptance",
+                artifactProbe: candidateProbe,
+                providerExecutionId: candidate.metadata?.executionId,
+                providerExecutionIds: candidate.metadata?.executionId
+                  ? [candidate.metadata.executionId]
+                  : undefined,
+              },
+            );
+            await codexExecution!.ledger.update(
+              codexExecution!.solExecutionId,
+              "awaiting_approval",
+              {
+                outputSummary: "Sol acceptance is checking the candidate probe",
+                artifactProbe: candidateProbe,
+              },
+            );
+          } catch (error) {
+            logTaskQueue("Codex queue ledger acceptance update failed:", error);
+          }
           const acceptance = await this.runCodexSolAcceptance(
             codexExecution!,
             candidate,
             abortController.signal,
           );
           if (acceptance.acceptance !== "PASS") {
+            task.codexDecision = acceptance.acceptance;
+            task.failureCode = `codex-sol-acceptance-${acceptance.acceptance.toLowerCase()}`;
             if (candidate.metadata) {
               candidate.metadata.status =
                 acceptance.acceptance.toLowerCase() as "partial" | "blocked";
@@ -3052,33 +3231,13 @@ export class TaskQueueManager {
               "Sol acceptance PASS: Luna output and artifact probe verified";
             candidate.metadata.acceptanceExecutionId = acceptance.executionId;
           }
-          try {
-            await codexExecution!.ledger.update(
-              codexExecution!.lunaExecutionId,
-              "awaiting_approval",
-              {
-                outputSummary: "Luna candidate awaiting Sol acceptance",
-                artifactProbe: candidateProbe,
-              },
-            );
-            await codexExecution!.ledger.update(
-              codexExecution!.solExecutionId,
-              "awaiting_approval",
-              {
-                outputSummary: "Sol acceptance is checking the candidate probe",
-                artifactProbe: candidateProbe,
-                acceptanceExecutionId: acceptance.executionId,
-              },
-            );
-          } catch (error) {
-            logTaskQueue("Codex queue ledger acceptance update failed:", error);
-          }
+          task.codexDecision = "PASS";
           return true;
         };
       }
 
       // 调用 NoteGenerator 生成笔记
-      await NoteGenerator.generateNoteForItem(
+      const generatedNote = await NoteGenerator.generateNoteForItem(
         item,
         undefined, // 不使用输出窗口,通过流式回调转发
         (message: string, progress: number, meta?: TaskProgressMeta) => {
@@ -3098,6 +3257,36 @@ export class TaskQueueManager {
         },
         noteOptions,
       );
+
+      if (codexExecution && generatedNote.response?.executionId) {
+        try {
+          const previousLuna = await codexExecution.ledger.findLatest({
+            executionId: codexExecution.lunaExecutionId,
+          });
+          const providerExecutionIds = Array.from(
+            new Set(
+              [
+                ...(previousLuna?.providerExecutionIds || []),
+                previousLuna?.providerExecutionId,
+                generatedNote.response.executionId,
+              ].filter((value): value is string => Boolean(value)),
+            ),
+          );
+          await codexExecution.ledger.update(
+            codexExecution.lunaExecutionId,
+            "awaiting_approval",
+            {
+              providerExecutionId:
+                previousLuna?.providerExecutionId ||
+                generatedNote.response.executionId,
+              providerExecutionIds,
+              outputSummary: "Luna provider turn produced a note candidate",
+            },
+          );
+        } catch (error) {
+          logTaskQueue("Codex Luna provider linkage update failed:", error);
+        }
+      }
 
       const artifact = await TaskArtifacts.probe(artifactType, item);
       if (!artifact.exists) {
@@ -3146,6 +3335,8 @@ export class TaskQueueManager {
           reason: artifact.reason,
         };
         if (finalProbe.probeFailed || !finalProbe.exists) {
+          task.codexDecision = "BLOCKED";
+          task.failureCode = "codex-persisted-artifact-probe-failed";
           await this.blockCodexQueueExecution(
             codexExecution,
             finalProbe.reason || "persisted-artifact-probe-failed",
@@ -3156,6 +3347,7 @@ export class TaskQueueManager {
           );
         }
         await this.passCodexQueueExecution(codexExecution, finalProbe);
+        task.codexDecision = "PASS";
         codexPassed = true;
       }
 
@@ -3201,7 +3393,15 @@ export class TaskQueueManager {
       return false; // 非快速失败，计入批次
     } catch (error: any) {
       // 任务失败
+      if (codexEndpoint && !codexExecution) {
+        task.codexDecision = "BLOCKED";
+        task.failureCode =
+          typeof error?.code === "string" ? error.code : "codex-task-failed";
+      }
       if (codexExecution && !codexPassed && !codexExecution.decision) {
+        task.codexDecision = "BLOCKED";
+        task.failureCode =
+          typeof error?.code === "string" ? error.code : "codex-task-failed";
         await this.blockCodexQueueExecution(
           codexExecution,
           error?.message || "codex-task-failed",
@@ -3219,6 +3419,13 @@ export class TaskQueueManager {
         ? getTaskAbortDetail()
         : this.buildTaskErrorDetails(task, error);
       const suppressTaskRetry = this.shouldSuppressTaskRetry(error, task);
+      if (
+        codexExecution &&
+        task.codexDecision &&
+        task.codexDecision !== "PASS"
+      ) {
+        task.failureCode ||= "codex-acceptance-not-passed";
+      }
 
       // 无 PDF 附件错误直接标记失败，不重试（用户需要手动添加 PDF）
       const isNoPdfError =
@@ -3298,6 +3505,7 @@ export class TaskQueueManager {
         }
       | undefined;
     return (
+      Boolean(task?.codexDecision && task.codexDecision !== "PASS") ||
       value?.suppressTaskRetry === true ||
       value?.name === "LLMApiCallError" ||
       value?.name === "LLMApiExhaustedError" ||

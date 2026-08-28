@@ -33,6 +33,7 @@ import {
   resetTruncationState,
 } from "./llmproviders/shared/truncation";
 import {
+  createAbortError,
   isAbortError,
   normalizeAbortError,
   throwIfAborted,
@@ -192,6 +193,7 @@ type CodexRequestMetadata = {
   role?: "sol" | "luna";
   model?: string;
   reasoningEffort?: string;
+  codexContract?: Record<string, unknown>;
 };
 
 let generatedExecutionId = 0;
@@ -225,6 +227,7 @@ function readCodexRequestMetadata(
     return undefined;
   };
   const sourceSha256 = readString("sourceSha256");
+  const codexContract = asRecord(nested.codexContract) || undefined;
   return {
     itemKey: readString("itemKey", "zoteroItemKey"),
     attachmentKey: readString("attachmentKey", "zoteroAttachmentKey"),
@@ -236,7 +239,98 @@ function readCodexRequestMetadata(
     role,
     model: readString("model", "codexModel"),
     reasoningEffort: readString("reasoningEffort", "codexReasoningEffort"),
+    codexContract,
   };
+}
+
+class CodexTurnSemaphore {
+  private active = false;
+  private readonly waiters: Array<{
+    signal?: LLMAbortSignal;
+    resolve: (release: () => void) => void;
+    reject: (error: unknown) => void;
+    onAbort?: () => void;
+  }> = [];
+
+  async acquire(signal?: LLMAbortSignal): Promise<() => void> {
+    throwIfAborted(signal);
+    if (!this.active && this.waiters.length === 0) {
+      this.active = true;
+      return () => this.release();
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter = {
+        signal,
+        resolve,
+        reject,
+      } as (typeof this.waiters)[number];
+      const onAbort = () => {
+        const index = this.waiters.indexOf(waiter);
+        if (index >= 0) this.waiters.splice(index, 1);
+        reject(createAbortError(signal));
+        this.pump();
+      };
+      waiter.onAbort = onAbort;
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      this.waiters.push(waiter);
+      this.pump();
+    });
+  }
+
+  private release(): void {
+    if (!this.active) return;
+    this.active = false;
+    this.pump();
+  }
+
+  private pump(): void {
+    if (this.active) return;
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift()!;
+      if (waiter.signal?.aborted) {
+        if (waiter.onAbort) {
+          waiter.signal.removeEventListener?.("abort", waiter.onAbort);
+        }
+        waiter.reject(createAbortError(waiter.signal));
+        continue;
+      }
+      waiter.signal?.removeEventListener?.("abort", waiter.onAbort!);
+      this.active = true;
+      let released = false;
+      waiter.resolve(() => {
+        if (released) return;
+        released = true;
+        this.release();
+      });
+      return;
+    }
+  }
+}
+
+const codexTurnSemaphore = new CodexTurnSemaphore();
+
+function codexContractPromptSuffix(contract?: Record<string, unknown>): string {
+  if (!contract) return "";
+  try {
+    return `\n\n[Codex contract — follow this bounded task specification]\n${JSON.stringify(contract)}\n[End Codex contract]`;
+  } catch {
+    return "";
+  }
+}
+
+function injectCodexContractIntoConversation(
+  conversation: ConversationMessage[],
+  contract?: Record<string, unknown>,
+): ConversationMessage[] {
+  const suffix = codexContractPromptSuffix(contract);
+  if (!suffix) return conversation;
+  return [
+    ...conversation,
+    {
+      role: "system",
+      content: suffix.trim(),
+    },
+  ];
 }
 
 function policyLabel(value: unknown): string {
@@ -572,6 +666,7 @@ export class LLMService {
     options.executionId = createExecutionId();
     options.parentExecutionId = requestMetadata.parentExecutionId;
     options.codexSourceSha256 = requestMetadata.sourceSha256;
+    options.codexContract = requestMetadata.codexContract;
     options.vendorOptions = {
       ...(options.vendorOptions || {}),
       codexAttempt: true,
@@ -716,14 +811,22 @@ export class LLMService {
   static async testConnection(): Promise<string> {
     const { id, impl, endpoint } = this.resolveProvider();
     const options = this.buildConnectionTestOptions(id, impl, endpoint);
-    return impl.testConnection(options);
+    return this.callProviderWithCodexSlot(
+      endpoint?.providerType === "codex-app-server",
+      options,
+      () => impl.testConnection(options),
+    );
   }
 
   static async testConnectionWithKey(apiKey: string): Promise<string> {
     const { id, impl, endpoint } = this.resolveProvider();
     const options = this.buildConnectionTestOptions(id, impl, endpoint);
     options.apiKey = apiKey;
-    return impl.testConnection(options);
+    return this.callProviderWithCodexSlot(
+      endpoint?.providerType === "codex-app-server",
+      options,
+      () => impl.testConnection(options),
+    );
   }
 
   static async listModels(
@@ -765,7 +868,11 @@ export class LLMService {
       provider,
       endpoint,
     );
-    return provider.testConnection(options);
+    return this.callProviderWithCodexSlot(
+      endpoint.providerType === "codex-app-server",
+      options,
+      () => provider.testConnection(options),
+    );
   }
 
   static endpointSupportsMultiFile(endpoint: LLMEndpoint): boolean {
@@ -862,8 +969,27 @@ export class LLMService {
     call: () => Promise<string>,
   ): Promise<string> {
     resetTruncationState(options);
-    const text = await call();
-    return text;
+    return this.callProviderWithCodexSlot(
+      Boolean(options.executionId),
+      options,
+      call,
+    );
+  }
+
+  private static async callProviderWithCodexSlot(
+    shouldSerialize: boolean,
+    options: LLMOptions,
+    call: () => Promise<string>,
+  ): Promise<string> {
+    const release = shouldSerialize
+      ? await codexTurnSemaphore.acquire(options.abortSignal)
+      : undefined;
+    try {
+      throwIfAborted(options.abortSignal);
+      return await call();
+    } finally {
+      release?.();
+    }
   }
 
   private static removeContinuationOverlap(
@@ -1117,6 +1243,11 @@ export class LLMService {
       throw new Error("codex-image-summary-unsupported");
     }
     const provider = this.getProviderForEndpoint(endpoint);
+    const providerPrompt =
+      prompt +
+      (endpoint.providerType === "codex-app-server"
+        ? codexContractPromptSuffix(options.codexContract)
+        : "");
     const warnings: string[] = [];
     request.transport?.onStatus?.({
       stage: "llm-preparing",
@@ -1201,7 +1332,7 @@ export class LLMService {
         text = await this.callProviderAndTrackTruncation(options, () =>
           provider.generateMultiFileSummary!(
             resolved.files,
-            prompt,
+            providerPrompt,
             options,
             progressProxy,
           ),
@@ -1209,7 +1340,7 @@ export class LLMService {
         const continued = await this.autoContinueMultiFileSummary(
           provider,
           resolved.files,
-          prompt,
+          providerPrompt,
           text,
           options,
           progressProxy,
@@ -1232,7 +1363,7 @@ export class LLMService {
           provider.generateSummary(
             resolved.content,
             resolved.isBase64,
-            prompt,
+            providerPrompt,
             options,
             progressProxy,
           ),
@@ -1241,7 +1372,7 @@ export class LLMService {
           provider,
           resolved.content,
           resolved.isBase64,
-          prompt,
+          providerPrompt,
           text,
           options,
           progressProxy,
@@ -1379,6 +1510,13 @@ export class LLMService {
     options: LLMOptions,
   ): Promise<LLMResponse> {
     const provider = this.getProviderForEndpoint(endpoint);
+    const providerConversation =
+      endpoint.providerType === "codex-app-server"
+        ? injectCodexContractIntoConversation(
+            request.conversation,
+            options.codexContract,
+          )
+        : request.conversation;
     const warnings: string[] = [];
     request.transport?.onStatus?.({
       stage: "llm-preparing",
@@ -1459,7 +1597,7 @@ export class LLMService {
         provider.chat(
           resolved.content,
           resolved.isBase64,
-          request.conversation,
+          providerConversation,
           options,
           progressProxy,
         ),
@@ -1468,7 +1606,7 @@ export class LLMService {
         provider,
         resolved.content,
         resolved.isBase64,
-        request.conversation,
+        providerConversation,
         text,
         options,
         progressProxy,

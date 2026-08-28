@@ -3,13 +3,11 @@ import {
   TaskQueueManager,
   TaskStatus,
   isCodexImageSummaryUnsupported,
-  runCodexTaskGate,
-  type CodexQueueGateOptions,
+  parseCodexSolAcceptance,
+  parseCodexSolContract,
 } from "../src/modules/taskQueue";
 import {
   CodexTaskLedger,
-  type CodexExecutionContext,
-  type CodexTaskContract,
   type CodexTaskLedgerFileSystem,
 } from "../src/modules/codexTaskLedger";
 import LLMService from "../src/modules/llmService";
@@ -19,6 +17,8 @@ import { CodexAppServerProcess } from "../src/modules/llmproviders/codexAppServe
 import { ContentExtractor } from "../src/modules/contentExtractor";
 import { NoteGenerator } from "../src/modules/noteGenerator";
 import { TaskArtifacts } from "../src/modules/taskArtifacts";
+import { AiNoteService } from "../src/modules/aiNoteService";
+import { PDFExtractor } from "../src/modules/pdfExtractor";
 
 class MemoryLedgerFileSystem implements CodexTaskLedgerFileSystem {
   content = "";
@@ -34,56 +34,390 @@ class MemoryLedgerFileSystem implements CodexTaskLedgerFileSystem {
   }
 }
 
-const solContext: Partial<CodexExecutionContext> = {
-  role: "sol",
-  model: "gpt-5.6-sol",
-  reasoningEffort: "high",
-  itemKey: "ITEM-1",
-  approvalPolicy: "on-request",
-  sandboxPolicy: "read-only",
-  networkAccess: false,
-};
-
-const lunaContext: Partial<CodexExecutionContext> = {
-  role: "luna",
-  model: "gpt-5.6-luna",
-  reasoningEffort: "max",
-  itemKey: "ITEM-1",
-  approvalPolicy: "on-request",
-  sandboxPolicy: "read-only",
-  networkAccess: false,
-};
-
-const contract: CodexTaskContract = {
-  executionId: "sol-plan-1",
-  acceptanceCriteria: [
-    "generated artifact is non-empty",
-    "artifact probe passes",
-  ],
-  inputSummary: "one authorized Zotero item",
-  outputSummary: "one summary note candidate",
-};
-
-function gateOptions(
-  ledger: CodexTaskLedger,
-  overrides: Partial<CodexQueueGateOptions> = {},
-): CodexQueueGateOptions {
+function createResumeTemplate(): Record<string, unknown> {
   return {
-    ledger,
-    solContext,
-    lunaContext,
-    contract,
-    runLuna: async () => ({
-      executionId: "luna-run-1",
-      outputSummary: "summary candidate generated",
-    }),
-    probeArtifact: async () => ({ exists: true }),
-    writeFinalNote: async () => undefined,
-    ...overrides,
+    id: "resume-test",
+    name: "Resume test",
+    description: "",
+    version: 2,
+    prompts: [],
+    phases: [
+      {
+        id: "seq",
+        title: "Sequential",
+        type: "sequential_dynamic",
+        description: "",
+        contextStrategy: "last_round",
+        planningPrompt: "Return chapters as JSON.",
+        fixedPrompts: [
+          {
+            id: "slot-1",
+            order: 1,
+            title: "Method",
+            prompt: "Read the method.",
+          },
+        ],
+        chapterTemplate: "Read {{title_en}}.",
+        maxChapters: 1,
+      },
+    ],
   };
 }
 
+function createLegacyResumeHtml(): string {
+  return "<h1>AI Deep Read - Paper</h1><p>Chapter 1: Method</p><h2>Method</h2><p>legacy answer</p><p>⏳ 等待生成...</p>";
+}
+
 describe("Codex task queue gate", function () {
+  it("fails closed for malformed, negated, or non-strict Sol acceptance", function () {
+    const rejected = [
+      "not pass",
+      "BYPASS",
+      "PASS because the candidate is incomplete",
+      JSON.stringify({ acceptance: "PARTIAL_PASS" }),
+      JSON.stringify({ acceptance: "PASS " }),
+      JSON.stringify({ status: "PASS" }),
+      "",
+    ];
+    for (const response of rejected) {
+      expect(parseCodexSolAcceptance(response), response).to.equal("BLOCKED");
+    }
+    expect(
+      parseCodexSolAcceptance(JSON.stringify({ acceptance: "PASS" })),
+    ).to.equal("PASS");
+    expect(
+      parseCodexSolAcceptance(JSON.stringify({ acceptance: "PARTIAL" })),
+    ).to.equal("PARTIAL");
+    expect(
+      parseCodexSolAcceptance(JSON.stringify({ acceptance: "BLOCKED" })),
+    ).to.equal("BLOCKED");
+  });
+
+  it("requires a structured task spec in the Sol contract", function () {
+    const parsed = parseCodexSolContract(
+      JSON.stringify({
+        taskType: "summary",
+        outputSchema: { format: "markdown", required: ["problem", "method"] },
+        inputBoundaries: ["only the selected Zotero attachment"],
+        acceptanceDimensions: ["criterion evidence is present"],
+        acceptanceCriteria: ["candidate probe passes"],
+        outputSummary: "one bounded summary candidate",
+      }),
+      "sol-plan-contract",
+      "Zotero item ITEM-1",
+    );
+
+    expect(parsed).to.include({
+      executionId: "sol-plan-contract",
+      taskType: "summary",
+    });
+    expect(parsed?.outputSchema).to.deep.include({ format: "markdown" });
+    expect(parsed?.inputBoundaries).to.deep.equal([
+      "only the selected Zotero attachment",
+    ]);
+    expect(parsed?.acceptanceDimensions).to.deep.equal([
+      "criterion evidence is present",
+    ]);
+  });
+
+  it("does not mutate a Codex deep-read resume note before Sol acceptance", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const previousChat = LLMService.chat;
+    const previousSave = AiNoteService.saveGeneratedNote;
+    const prefs = new Map<string, unknown>([
+      ["extensions.zotero.aiButler.multiRoundPromptTemplateId", "resume-test"],
+      [
+        "extensions.zotero.aiButler.multiRoundPromptTemplates",
+        JSON.stringify([createResumeTemplate()]),
+      ],
+    ]);
+    const formatMessagesSync = (requests: Array<{ id: string }>) =>
+      requests.map(({ id }) => ({ value: id, attributes: [] }));
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: { locale: { current: { formatMessagesSync } } },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+
+    const sourceItem = {
+      id: 1,
+      key: "ITEM-RESUME",
+      libraryID: 1,
+      getField: () => "Paper",
+    } as unknown as Zotero.Item;
+    const originalHtml = createLegacyResumeHtml();
+    let currentHtml = originalHtml;
+    let setNoteCount = 0;
+    let saveTxCount = 0;
+    const existingNote = {
+      id: 20,
+      parentID: 1,
+      getNote: () => currentHtml,
+      setNote: (value: string) => {
+        setNoteCount += 1;
+        currentHtml = value;
+      },
+      saveTx: async () => {
+        saveTxCount += 1;
+      },
+    } as unknown as Zotero.Item;
+    const deepReadResponse = {
+      text: "fresh method answer",
+      providerId: "codex-app-server",
+      executionId: "luna-exec",
+      role: "luna" as const,
+      status: "passed" as const,
+      model: "gpt-5.6-luna",
+    };
+    LLMService.chat = (async () => deepReadResponse) as any;
+    let saveGeneratedCount = 0;
+    AiNoteService.saveGeneratedNote = (async (options: any) => {
+      saveGeneratedCount += 1;
+      expect(options.existing).to.equal(existingNote);
+      options.existing.setNote(options.html);
+      await options.existing.saveTx();
+      return options.existing;
+    }) as any;
+
+    try {
+      let gateCalled = 0;
+      let rejected = false;
+      try {
+        await (NoteGenerator as any).generateDeepReadContent({
+          item: sourceItem,
+          existing: existingNote,
+          existingHtml: originalHtml,
+          policy: "overwrite",
+          pdfContent: "safe text",
+          isBase64: false,
+          itemTitle: "Paper",
+          noteWriteGate: async () => {
+            gateCalled += 1;
+            return false;
+          },
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).to.equal(true);
+      expect(gateCalled).to.equal(1);
+      expect(saveGeneratedCount).to.equal(0);
+      expect(setNoteCount).to.equal(0);
+      expect(saveTxCount).to.equal(0);
+      expect(currentHtml).to.equal(originalHtml);
+    } finally {
+      LLMService.chat = previousChat;
+      AiNoteService.saveGeneratedNote = previousSave;
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
+  it("commits a Codex deep-read resume exactly once after Sol acceptance", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const previousChat = LLMService.chat;
+    const previousSave = AiNoteService.saveGeneratedNote;
+    const prefs = new Map<string, unknown>([
+      ["extensions.zotero.aiButler.multiRoundPromptTemplateId", "resume-test"],
+      [
+        "extensions.zotero.aiButler.multiRoundPromptTemplates",
+        JSON.stringify([createResumeTemplate()]),
+      ],
+    ]);
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    const sourceItem = {
+      id: 1,
+      key: "ITEM-RESUME",
+      libraryID: 1,
+      getField: () => "Paper",
+    } as unknown as Zotero.Item;
+    const originalHtml = createLegacyResumeHtml();
+    let currentHtml = originalHtml;
+    let setNoteCount = 0;
+    let saveTxCount = 0;
+    const existingNote = {
+      id: 20,
+      parentID: 1,
+      getNote: () => currentHtml,
+      setNote: (value: string) => {
+        setNoteCount += 1;
+        currentHtml = value;
+      },
+      saveTx: async () => {
+        saveTxCount += 1;
+      },
+    } as unknown as Zotero.Item;
+    LLMService.chat = (async () => ({
+      text: "fresh method answer",
+      providerId: "codex-app-server",
+      executionId: "luna-exec",
+      role: "luna" as const,
+      status: "passed" as const,
+      model: "gpt-5.6-luna",
+    })) as any;
+    let saveGeneratedCount = 0;
+    AiNoteService.saveGeneratedNote = (async (options: any) => {
+      saveGeneratedCount += 1;
+      expect(options.existing).to.equal(existingNote);
+      options.existing.setNote(options.html);
+      await options.existing.saveTx();
+      return options.existing;
+    }) as any;
+
+    try {
+      let gateCalled = 0;
+      const result = await (NoteGenerator as any).generateDeepReadContent({
+        item: sourceItem,
+        existing: existingNote,
+        existingHtml: originalHtml,
+        policy: "overwrite",
+        pdfContent: "safe text",
+        isBase64: false,
+        itemTitle: "Paper",
+        noteWriteGate: async (candidate: any) => {
+          gateCalled += 1;
+          expect(candidate.html).to.contain("fresh method answer");
+          return true;
+        },
+      });
+      expect(result.note).to.equal(existingNote);
+      expect(gateCalled).to.equal(1);
+      expect(saveGeneratedCount).to.equal(1);
+      expect(setNoteCount).to.equal(1);
+      expect(saveTxCount).to.equal(1);
+    } finally {
+      LLMService.chat = previousChat;
+      AiNoteService.saveGeneratedNote = previousSave;
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
+  it("stops during content extraction before any LLM call or note write", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const previousFind = AiNoteService.findNoteRecord;
+    const previousExtract = ContentExtractor.extractAnalyzableContentFromItem;
+    const previousGenerate = LLMService.generate;
+    const previousSave = AiNoteService.saveGeneratedNote;
+    const previousMode = LLMService.getEffectivePdfProcessMode;
+    const prefs = new Map<string, unknown>([
+      ["extensions.zotero.aiButler.noteStrategy", "overwrite"],
+      ["extensions.zotero.aiButler.summaryMode", "deepRead"],
+      ["extensions.zotero.aiButler.pdfProcessMode", "text"],
+      ["extensions.zotero.aiButler.enablePdfSizeLimit", false],
+    ]);
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    const item = {
+      id: 10,
+      key: "ITEM-ABORT",
+      getField: () => "Abort paper",
+      isNote: () => false,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+    } as unknown as Zotero.Item;
+    const abortController = new AbortController();
+    let extractCount = 0;
+    let llmCount = 0;
+    let saveCount = 0;
+    AiNoteService.findNoteRecord = async () => null;
+    ContentExtractor.extractAnalyzableContentFromItem = async () => {
+      extractCount += 1;
+      abortController.abort("cancelled during extraction");
+      return {
+        content: "should not reach the model",
+        isBase64: false,
+        kind: "pdf",
+      };
+    };
+    LLMService.getEffectivePdfProcessMode = (() => "text") as any;
+    LLMService.generate = (async () => {
+      llmCount += 1;
+      return { text: "unexpected" };
+    }) as any;
+    AiNoteService.saveGeneratedNote = (async () => {
+      saveCount += 1;
+      return item;
+    }) as any;
+    try {
+      let thrown: unknown;
+      try {
+        await NoteGenerator.generateNoteForItem(
+          item,
+          undefined,
+          undefined,
+          undefined,
+          { abortSignal: abortController.signal },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+      expect(extractCount).to.equal(1);
+      expect(llmCount).to.equal(0);
+      expect(saveCount).to.equal(0);
+      expect(thrown).to.be.instanceOf(Error);
+    } finally {
+      AiNoteService.findNoteRecord = previousFind;
+      ContentExtractor.extractAnalyzableContentFromItem = previousExtract;
+      LLMService.generate = previousGenerate;
+      AiNoteService.saveGeneratedNote = previousSave;
+      LLMService.getEffectivePdfProcessMode = previousMode;
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
   it("records Codex thread/turn diagnostics through the Provider side channel", async function () {
     const globalValue = globalThis as any;
     const previousZotero = globalValue.Zotero;
@@ -129,8 +463,8 @@ describe("Codex task queue gate", function () {
         supportsSystemPrompt: true,
         supportedParams: ["stream", "reasoningEffort"],
       },
-      generateSummary: async (_content, isBase64, _prompt, options) => {
-        seen.push({ isBase64, options });
+      generateSummary: async (_content, isBase64, prompt, options) => {
+        seen.push({ isBase64, prompt, options });
         await options.onCodexTurnResult?.({
           threadId: "thread-side",
           turnId: "turn-side",
@@ -160,11 +494,21 @@ describe("Codex task queue gate", function () {
           itemKey: "ITEM-1",
           attachmentKey: "ATTACH-1",
           sourceSha256: "e".repeat(64),
+          codexContract: {
+            taskType: "summary",
+            outputSchema: { format: "markdown", required: ["summary"] },
+            inputBoundaries: ["selected item only"],
+            acceptanceDimensions: ["evidence"],
+          },
         },
       });
 
       expect(seen).to.have.length(1);
       expect(seen[0].isBase64).to.equal(false);
+      expect(seen[0].prompt).to.contain("Codex contract");
+      expect(seen[0].options.codexContract).to.deep.include({
+        taskType: "summary",
+      });
       expect(seen[0].options).to.include({
         role: "luna",
         model: "gpt-5.6-luna",
@@ -184,6 +528,237 @@ describe("Codex task queue gate", function () {
         (await ledger.findLatest({ executionId: seen[0].options.executionId }))
           ?.status,
       ).to.equal("passed");
+    } finally {
+      if (originalProvider) ProviderRegistry.register(originalProvider);
+      LLMService.setCodexTaskLedger(null);
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
+  it("serializes two priority-style Codex summary calls through one turn slot", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const prefs = new Map<string, unknown>();
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    const originalProvider = ProviderRegistry.get("codex-app-server");
+    const ledger = new CodexTaskLedger("/tmp/ledger.jsonl", {
+      fileSystem: new MemoryLedgerFileSystem(),
+    });
+    let active = 0;
+    let maxActive = 0;
+    ProviderRegistry.register({
+      id: "codex-app-server",
+      capabilities: {
+        supportsText: true,
+        supportsStreaming: true,
+        supportsPdfBase64: false,
+        maxPdfFiles: 0,
+        supportsSystemPrompt: true,
+        supportedParams: ["stream", "reasoningEffort"],
+      },
+      generateSummary: async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 8));
+        active -= 1;
+        return "summary";
+      },
+      chat: async () => "chat",
+      testConnection: async () => "OK",
+    } as any);
+    LLMEndpointManager.saveEndpoints([
+      LLMEndpointManager.createEndpoint("codex-app-server", "sol"),
+    ]);
+    LLMService.setCodexTaskLedger(ledger);
+    try {
+      await Promise.all(
+        ["priority-a", "priority-b"].map((itemKey) =>
+          LLMService.generate({
+            task: "summary",
+            content: { kind: "text", text: itemKey },
+            transport: { retry: false },
+            metadata: { role: "luna", itemKey },
+          }),
+        ),
+      );
+      expect(maxActive).to.equal(1);
+    } finally {
+      if (originalProvider) ProviderRegistry.register(originalProvider);
+      LLMService.setCodexTaskLedger(null);
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
+  it("creates a new provider execution id for each retry attempt", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const previousProvider = ProviderRegistry.get("codex-app-server");
+    const prefs = new Map<string, unknown>([["maxApiSwitchCount", "2"]]);
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    const fileSystem = new MemoryLedgerFileSystem();
+    const ledger = new CodexTaskLedger("/tmp/ledger-retry.jsonl", {
+      fileSystem,
+    });
+    const executionIds: string[] = [];
+    let providerCallCount = 0;
+    ProviderRegistry.register({
+      id: "codex-app-server",
+      capabilities: {
+        supportsText: true,
+        supportsStreaming: true,
+        supportsPdfBase64: false,
+        maxPdfFiles: 0,
+        supportsSystemPrompt: true,
+        supportedParams: ["stream", "reasoningEffort"],
+      },
+      generateSummary: async (_content, _isBase64, _prompt, options) => {
+        providerCallCount += 1;
+        executionIds.push(options.executionId || "missing");
+        if (providerCallCount === 1)
+          throw new Error("transient provider error");
+        return "retry succeeded";
+      },
+      chat: async () => "chat",
+      testConnection: async () => "OK",
+    } as any);
+    const endpoint = LLMEndpointManager.createEndpoint(
+      "codex-app-server",
+      "sol",
+    );
+    LLMEndpointManager.saveEndpoints([endpoint]);
+    LLMService.setCodexTaskLedger(ledger);
+    try {
+      const response = await LLMService.generate({
+        task: "summary",
+        content: { kind: "text", text: "safe retry input" },
+        metadata: { role: "sol", itemKey: "ITEM-RETRY" },
+        transport: { retry: true },
+      });
+      expect(response.text).to.equal("retry succeeded");
+      expect(providerCallCount).to.equal(2);
+      expect(executionIds[0]).not.to.equal(executionIds[1]);
+      expect(
+        (await ledger.query({ itemKey: "ITEM-RETRY" })).map(
+          (record) => record.status,
+        ),
+      ).to.include.members(["failed", "passed"]);
+    } finally {
+      if (previousProvider) ProviderRegistry.register(previousProvider);
+      LLMService.setCodexTaskLedger(null);
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
+  it("serializes Codex calls from a parallelizable deep-read phase", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const prefs = new Map<string, unknown>();
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    const originalProvider = ProviderRegistry.get("codex-app-server");
+    const ledger = new CodexTaskLedger("/tmp/ledger.jsonl", {
+      fileSystem: new MemoryLedgerFileSystem(),
+    });
+    let active = 0;
+    let maxActive = 0;
+    ProviderRegistry.register({
+      id: "codex-app-server",
+      capabilities: {
+        supportsText: true,
+        supportsStreaming: true,
+        supportsPdfBase64: false,
+        maxPdfFiles: 0,
+        supportsSystemPrompt: true,
+        supportedParams: ["stream", "reasoningEffort"],
+      },
+      generateSummary: async () => "summary",
+      chat: async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 8));
+        active -= 1;
+        return "chapter";
+      },
+      testConnection: async () => "OK",
+    } as any);
+    LLMEndpointManager.saveEndpoints([
+      LLMEndpointManager.createEndpoint("codex-app-server", "luna"),
+    ]);
+    LLMService.setCodexTaskLedger(ledger);
+    try {
+      await Promise.all(
+        ["chapter-a", "chapter-b"].map((title) =>
+          LLMService.chat({
+            content: { kind: "text", text: "safe paper text" },
+            conversation: [{ role: "user", content: `Read ${title}` }],
+            transport: { retry: false },
+            metadata: { role: "luna", itemKey: "ITEM-DEEP" },
+          }),
+        ),
+      );
+      expect(maxActive).to.equal(1);
     } finally {
       if (originalProvider) ProviderRegistry.register(originalProvider);
       LLMService.setCodexTaskLedger(null);
@@ -369,10 +944,26 @@ describe("Codex task queue gate", function () {
         text:
           turn === 1
             ? JSON.stringify({
+                taskType: "summary",
+                outputSchema: {
+                  format: "markdown",
+                  required: ["summary"],
+                },
+                inputBoundaries: ["selected Zotero item only"],
+                acceptanceDimensions: ["candidate evidence"],
                 acceptanceCriteria: ["candidate and probe are valid"],
                 outputSummary: "a bounded summary candidate",
               })
-            : JSON.stringify({ acceptance: "PASS" }),
+            : JSON.stringify({
+                acceptance: "PASS",
+                criteria: [
+                  {
+                    criterion: "candidate and probe are valid",
+                    verdict: "PASS",
+                    evidence: "bounded candidate probe is true",
+                  },
+                ],
+              }),
         providerId: "codex-app-server",
         executionId: `provider-${turn}`,
         role: "sol",
@@ -430,6 +1021,9 @@ describe("Codex task queue gate", function () {
       ).to.equal(true);
       expect(calls[0].content).to.deep.include({ kind: "text" });
       expect(calls[1].content).to.deep.include({ kind: "text" });
+      expect(calls[1].content.text).to.contain("candidateExcerpt");
+      expect(calls[1].content.text).to.contain("criterionEvidence");
+      expect(calls[1].content.text).to.contain("candidateDigest");
       expect(execution.contract.acceptanceCriteria).to.deep.equal([
         "candidate and probe are valid",
       ]);
@@ -510,10 +1104,26 @@ describe("Codex task queue gate", function () {
         const text =
           providerCall === 1
             ? JSON.stringify({
+                taskType: "summary",
+                outputSchema: {
+                  format: "markdown",
+                  required: ["problem", "method"],
+                },
+                inputBoundaries: ["only the selected Zotero attachment"],
+                acceptanceDimensions: ["criterion evidence is present"],
                 acceptanceCriteria: ["candidate probe passes"],
                 outputSummary: "queue candidate",
               })
-            : JSON.stringify({ acceptance: "PASS" });
+            : JSON.stringify({
+                acceptance: "PASS",
+                criteria: [
+                  {
+                    criterion: "candidate probe passes",
+                    verdict: "PASS",
+                    evidence: "candidate probe exists",
+                  },
+                ],
+              });
         await options.onCodexTurnResult?.({
           threadId: `thread-${providerCall}`,
           turnId: `turn-${providerCall}`,
@@ -590,6 +1200,9 @@ describe("Codex task queue gate", function () {
         role: "luna",
         itemKey: "ITEM-QUEUE",
       });
+      expect(lunaOptions.metadata.codexContract).to.include({
+        taskType: "summary",
+      });
       expect(turns).to.deep.equal(["sol", "sol"]);
       expect(
         (await ledger.findLatest({ itemKey: "ITEM-QUEUE" }))?.status,
@@ -608,88 +1221,94 @@ describe("Codex task queue gate", function () {
     }
   });
 
-  it("writes the final note only after a contract, Luna result, and artifact probe pass", async function () {
+  it("fails closed when the current attachment bytes mismatch the expected hash", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const previousIo = globalValue.IOUtils;
+    const previousAttachments = PDFExtractor.getAllPdfAttachments;
+    const previousGenerate = LLMService.generate;
+    const prefs = new Map<string, unknown>();
+    const attachment = {
+      key: "ATTACH-HASH",
+      getFilePathAsync: async () => "/safe/attachment.pdf",
+    } as unknown as Zotero.Item;
+    const item = { id: 1, key: "ITEM-HASH" } as unknown as Zotero.Item;
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    globalValue.IOUtils = {
+      read: async () => new TextEncoder().encode("current attachment bytes"),
+    };
     const fileSystem = new MemoryLedgerFileSystem();
-    const ledger = new CodexTaskLedger("/tmp/ledger.jsonl", {
+    const ledger = new CodexTaskLedger("/tmp/ledger-hash.jsonl", {
       fileSystem,
-      idFactory: (() => {
-        let index = 0;
-        return () => `exec-${++index}`;
-      })(),
     });
-    let writeCount = 0;
-
-    const result = await runCodexTaskGate(
-      gateOptions(ledger, {
-        writeFinalNote: async () => {
-          writeCount += 1;
-        },
-      }),
-    );
-
-    expect(result.status).to.equal("passed");
-    expect(result.acceptance).to.equal("PASS");
-    expect(writeCount).to.equal(1);
-    expect((await ledger.query({ status: "passed" })).length).to.be.greaterThan(
-      0,
-    );
-  });
-
-  it("blocks final-note writing when the generated artifact probe fails", async function () {
-    const fileSystem = new MemoryLedgerFileSystem();
-    const ledger = new CodexTaskLedger("/tmp/ledger.jsonl", {
-      fileSystem,
-      idFactory: () => "exec-probe-failure",
-    });
-    let writeCount = 0;
-
-    const result = await runCodexTaskGate(
-      gateOptions(ledger, {
-        probeArtifact: async () => ({
-          exists: false,
-          probeFailed: true,
-          reason: "probe-failed",
-        }),
-        writeFinalNote: async () => {
-          writeCount += 1;
-        },
-      }),
-    );
-
-    expect(result.status).to.equal("blocked");
-    expect(result.acceptance).to.equal("BLOCKED");
-    expect(writeCount).to.equal(0);
-    expect(
-      (await ledger.query({ status: "blocked" })).length,
-    ).to.be.greaterThan(0);
-  });
-
-  it("does not run Luna when the Sol contract is absent", async function () {
-    const fileSystem = new MemoryLedgerFileSystem();
-    const ledger = new CodexTaskLedger("/tmp/ledger.jsonl", {
-      fileSystem,
-      idFactory: () => "exec-no-contract",
-    });
-    let lunaRunCount = 0;
-    let writeCount = 0;
-
-    const result = await runCodexTaskGate(
-      gateOptions(ledger, {
-        contract: undefined,
-        runLuna: async () => {
-          lunaRunCount += 1;
-          return { executionId: "unexpected", outputSummary: "unexpected" };
-        },
-        writeFinalNote: async () => {
-          writeCount += 1;
-        },
-      }),
-    );
-
-    expect(result.status).to.equal("blocked");
-    expect(result.acceptance).to.equal("BLOCKED");
-    expect(lunaRunCount).to.equal(0);
-    expect(writeCount).to.equal(0);
+    LLMService.setCodexTaskLedger(ledger);
+    let providerCallCount = 0;
+    LLMService.generate = (async () => {
+      providerCallCount += 1;
+      throw new Error("planner must not run after a hash mismatch");
+    }) as any;
+    PDFExtractor.getAllPdfAttachments = async () => [attachment];
+    try {
+      const manager = Object.create(TaskQueueManager.prototype) as any;
+      let thrown: any;
+      try {
+        await manager.createCodexQueueExecution(
+          {
+            id: "hash-task",
+            itemId: 1,
+            title: "Hash paper",
+            status: TaskStatus.PENDING,
+            progress: 0,
+            createdAt: new Date(),
+            retryCount: 0,
+            maxRetries: 1,
+            options: {
+              itemKey: "ITEM-HASH",
+              attachmentKey: "ATTACH-HASH",
+              sourceSha256: "0".repeat(64),
+            },
+          },
+          item,
+          LLMEndpointManager.createEndpoint("codex-app-server", "sol"),
+        );
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown?.code).to.equal("codex-source-sha256-mismatch");
+      expect(providerCallCount).to.equal(0);
+      const record = await ledger.findLatest({ itemKey: "ITEM-HASH" });
+      expect(record?.status).to.equal("failed");
+      expect(record?.sourceSha256Verified).to.equal(false);
+      expect(record?.sourceSha256Mismatch).to.equal(true);
+      expect(record?.sourceSha256).not.to.equal("0".repeat(64));
+    } finally {
+      LLMService.generate = previousGenerate;
+      LLMService.setCodexTaskLedger(null);
+      PDFExtractor.getAllPdfAttachments = previousAttachments;
+      globalValue.IOUtils = previousIo;
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
   });
 
   it("marks image-summary as unsupported for Codex without invoking a provider", function () {

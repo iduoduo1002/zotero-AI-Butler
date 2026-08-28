@@ -64,6 +64,8 @@ export type LLMOptions = {
   codexDiagnostics?: CodexEventDiagnostic[];
   codexRequestId?: string;
   codexSourceSha256?: string;
+  /** Structured Sol contract injected into native Codex prompts. */
+  codexContract?: Record<string, unknown>;
   codexStatus?:
     | "planned"
     | "running"
