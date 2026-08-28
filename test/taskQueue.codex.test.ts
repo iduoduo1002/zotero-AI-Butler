@@ -1292,6 +1292,15 @@ describe("Codex task queue gate", function () {
     let persistedProbeCount = 0;
     let providerCall = 0;
     let acceptanceValue: "PASS" | "BLOCKED" = "PASS";
+    let deferAcceptance = true;
+    let releaseAcceptance!: () => void;
+    const acceptanceRelease = new Promise<void>((resolve) => {
+      releaseAcceptance = resolve;
+    });
+    let signalAcceptanceStarted!: () => void;
+    const acceptanceStarted = new Promise<void>((resolve) => {
+      signalAcceptanceStarted = resolve;
+    });
     const note = {
       id: 221,
       parentID: item.id,
@@ -1340,7 +1349,10 @@ describe("Codex task queue gate", function () {
         if (providerCall === 1) eventLog.push("planning:done");
         if (providerCall === 2) eventLog.push("luna:done");
         if (providerCall === 3) {
-          eventLog.push(`acceptance:${acceptanceValue}`);
+          eventLog.push("acceptance:start");
+          signalAcceptanceStarted();
+          if (deferAcceptance) await acceptanceRelease;
+          eventLog.push(`acceptance:done:${acceptanceValue}`);
         }
         expect(prompt).to.be.a("string");
         await options.onCodexTurnResult?.({
@@ -1365,7 +1377,7 @@ describe("Codex task queue gate", function () {
     PDFExtractor.extractTextFromItem = async () => "safe extracted text";
     AiNoteService.findNoteRecord = async () => null;
     AiNoteService.saveGeneratedNote = async (options: any) => {
-      expect(eventLog.at(-1)).to.equal("acceptance:PASS");
+      expect(eventLog.at(-1)).to.equal("acceptance:done:PASS");
       eventLog.push("save");
       const html = options.html as string;
       saveTxCount += 1;
@@ -1417,7 +1429,17 @@ describe("Codex task queue gate", function () {
     manager.saveToStorage = async () => undefined;
     manager.isRunning = true;
     try {
-      const quickFail = await manager.executeTask("summary-task-production");
+      const taskExecution = manager.executeTask("summary-task-production");
+      await acceptanceStarted;
+      expect(saveTxCount).to.equal(0);
+      expect(persistedProbeCount).to.equal(0);
+      expect(eventLog).to.deep.equal([
+        "planning:done",
+        "luna:done",
+        "acceptance:start",
+      ]);
+      releaseAcceptance();
+      const quickFail = await taskExecution;
       const task = manager.tasks.get("summary-task-production");
       expect(quickFail).to.equal(false);
       expect(task.status).to.equal(TaskStatus.COMPLETED);
@@ -1430,13 +1452,15 @@ describe("Codex task queue gate", function () {
       expect(eventLog).to.deep.equal([
         "planning:done",
         "luna:done",
-        "acceptance:PASS",
+        "acceptance:start",
+        "acceptance:done:PASS",
         "save",
         "persisted-probe",
         "complete",
       ]);
 
       acceptanceValue = "BLOCKED";
+      deferAcceptance = false;
       providerCall = 0;
       saveTxCount = 0;
       persistedProbeCount = 0;
@@ -1463,7 +1487,8 @@ describe("Codex task queue gate", function () {
       expect(eventLog).to.deep.equal([
         "planning:done",
         "luna:done",
-        "acceptance:BLOCKED",
+        "acceptance:start",
+        "acceptance:done:BLOCKED",
       ]);
       expect(roles.slice(3)).to.deep.equal(["sol", "luna", "sol"]);
       const records = await ledger.readAll();
