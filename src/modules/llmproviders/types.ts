@@ -46,6 +46,16 @@ export type LLMOptions = {
   vendorOptions?: Record<string, unknown>;
   abortSignal?: LLMAbortSignal;
   truncation?: LLMTruncationState;
+  /** Stable execution context used by native Codex app-server calls. */
+  executionId?: string;
+  parentExecutionId?: string;
+  role?: "sol" | "luna";
+  codexBinaryPath?: string;
+  approvalPolicy?: string | Record<string, unknown>;
+  sandboxPolicy?: string | Record<string, unknown>;
+  networkAccess?: boolean;
+  mcpEnabled?: boolean;
+  codexThreadId?: string;
 };
 
 export type LLMProviderParam =
