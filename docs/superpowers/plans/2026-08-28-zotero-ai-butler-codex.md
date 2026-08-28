@@ -27,6 +27,7 @@
 ### Task 1: Codex App Server runtime and Provider
 
 **Files:**
+
 - Create: `src/modules/llmproviders/codexAppServer/types.ts`
 - Create: `src/modules/llmproviders/codexAppServer/CodexAppServerProcess.ts`
 - Create: `src/modules/llmproviders/codexAppServer/CodexAppServerClient.ts`
@@ -36,6 +37,7 @@
 - Test: `test/codexAppServerProvider.test.ts`
 
 **Interfaces:**
+
 - Consumes existing `ILlmProvider`, `LLMOptions`, `ConversationMessage`, `ProgressCb`, and the Zotero runtime.
 - Produces `CodexAppServerClient`, `CodexAppServerProcess`, and a self-registered Provider with id `codex-app-server`.
 - `LLMOptions` gains optional `executionId`, `parentExecutionId`, `role: "sol" | "luna"`, `codexBinaryPath`, `approvalPolicy`, `sandboxPolicy`, `networkAccess`, `mcpEnabled`, and `codexThreadId` fields. Existing Provider callers may omit them.
@@ -43,14 +45,17 @@
 
 - [ ] **Step 1: Write protocol tests first.** Add a fake line-oriented subprocess with stdin capture and stdout lines. Assert `initialize` is sent before `thread/start`, request ids are matched out of order, `item/agentMessage/delta` chunks are concatenated, and `turn/completed` resolves the turn.
 
-~~~ts
+```ts
 it("runs initialize, thread/start, and turn/start and streams final text", async () => {
   const fake = new FakeJsonlProcess([
     { id: 1, result: { userAgent: "fake" } },
     { id: 2, result: { thread: { id: "thr-1" } } },
     { method: "item/agentMessage/delta", params: { delta: "摘要" } },
     { id: 3, result: { turn: { id: "turn-1" } } },
-    { method: "turn/completed", params: { turn: { id: "turn-1", status: "completed" } } },
+    {
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed" } },
+    },
   ]);
   const result = await new CodexAppServerClient(fake).runTurn({
     model: "gpt-5.6-sol",
@@ -60,16 +65,18 @@ it("runs initialize, thread/start, and turn/start and streams final text", async
   });
   expect(result.text).to.equal("摘要");
   expect(fake.requests.map((r) => r.method)).to.deep.equal([
-    "initialize", "thread/start", "turn/start",
+    "initialize",
+    "thread/start",
+    "turn/start",
   ]);
 });
-~~~
+```
 
 - [ ] **Step 2: Run the focused test and verify it fails** with the missing runtime/client symbols.
 
-~~~bash
+```bash
 npx mocha --config test/tsconfig.json test/codexAppServerProvider.test.ts
-~~~
+```
 
 Expected: FAIL because the new Codex runtime is not implemented.
 
@@ -81,16 +88,17 @@ Expected: FAIL because the new Codex runtime is not implemented.
 
 - [ ] **Step 6: Register and run tests.** Export the Provider from `index.ts`, keep existing provider registrations unchanged, run the focused test plus `test/llmProviders.test.ts`, and commit:
 
-~~~bash
+```bash
 git add src/modules/llmproviders test/codexAppServerProvider.test.ts
 git commit -m "feat: add native Codex app-server provider"
-~~~
+```
 
 ---
 
 ### Task 2: Endpoint model, preferences, and settings UI
 
 **Files:**
+
 - Modify: `src/modules/apiKeyManager.ts`
 - Modify: `src/modules/llmEndpointManager.ts`
 - Modify: `src/modules/views/ui/EndpointSettingsPanel.ts`
@@ -103,6 +111,7 @@ git commit -m "feat: add native Codex app-server provider"
 - Test: `test/i18nLocaleResources.test.ts`
 
 **Interfaces:**
+
 - Consumes Provider id `codex-app-server` and the `LLMOptions` Codex fields from Task 1.
 - Produces normalized `LLMEndpoint` values with `providerType: "codex-app-server"`, empty `apiUrl/apiKey`, `model`, `reasoningEffort`, `codexRole`, `codexBinaryPath`, `approvalPolicy`, `sandboxPolicy`, `networkAccess`, and `mcpEnabled`.
 - `LLMEndpointManager.isEndpointUsable` returns true for Codex when model is non-empty even though URL/key are empty.
@@ -111,9 +120,9 @@ git commit -m "feat: add native Codex app-server provider"
 
 - [ ] **Step 2: Run the focused endpoint tests and verify the new cases fail.**
 
-~~~bash
+```bash
 npx mocha --config test/tsconfig.json test/llmEndpointManager.test.ts
-~~~
+```
 
 - [ ] **Step 3: Implement endpoint type/default/migration changes.** Keep legacy endpoint migration behavior intact. Do not add Codex to `ApiKeyManager` rotation maps; Codex has no API keys.
 
@@ -123,16 +132,17 @@ npx mocha --config test/tsconfig.json test/llmEndpointManager.test.ts
 
 - [ ] **Step 6: Commit the settings slice.**
 
-~~~bash
+```bash
 git add src/modules/apiKeyManager.ts src/modules/llmEndpointManager.ts src/modules/views/ui/EndpointSettingsPanel.ts addon/prefs.js addon/locale test/llmEndpointManager.test.ts test/i18nLocaleResources.test.ts
 git commit -m "feat: add Codex endpoint settings"
-~~~
+```
 
 ---
 
 ### Task 3: Execution context, task ledger, and Sol/Luna queue integration
 
 **Files:**
+
 - Create: `src/modules/codexTaskLedger.ts`
 - Modify: `src/modules/llmService.ts`
 - Modify: `src/modules/noteGenerator.ts`
@@ -145,14 +155,20 @@ git commit -m "feat: add Codex endpoint settings"
 - Test: `test/llmNoteMetadata.test.ts`
 
 **Interfaces:**
+
 - Consumes the Codex Provider and endpoint fields from Tasks 1–2.
 - Produces `CodexExecutionContext` and `CodexTaskLedger` with append-only records:
 
-~~~ts
+```ts
 type CodexRole = "sol" | "luna";
 type CodexExecutionStatus =
-  | "planned" | "running" | "awaiting_approval" | "passed"
-  | "partial" | "blocked" | "failed";
+  | "planned"
+  | "running"
+  | "awaiting_approval"
+  | "passed"
+  | "partial"
+  | "blocked"
+  | "failed";
 interface CodexExecutionContext {
   executionId: string;
   parentExecutionId?: string;
@@ -168,15 +184,15 @@ interface CodexExecutionContext {
   sandboxPolicy: string;
   networkAccess: boolean;
 }
-~~~
+```
 
 - [ ] **Step 1: Write ledger tests first.** Assert a record receives a stable execution id, appends status transitions without exposing prompt/PDF content, survives a malformed previous line, and can query the latest record by Zotero item key.
 
 - [ ] **Step 2: Run ledger tests and verify failure.**
 
-~~~bash
+```bash
 npx mocha --config test/tsconfig.json test/codexTaskLedger.test.ts
-~~~
+```
 
 - [ ] **Step 3: Implement an append-only JSONL ledger.** Store it under the plugin data directory, create the directory on demand, write one redacted JSON object per line, and expose `start`, `update`, `complete`, `fail`, and `findLatest` methods. Never persist full prompts, Base64, or absolute paths.
 
@@ -190,17 +206,18 @@ npx mocha --config test/tsconfig.json test/codexTaskLedger.test.ts
 
 - [ ] **Step 8: Run queue/metadata tests and commit.**
 
-~~~bash
+```bash
 npx mocha --config test/tsconfig.json test/codexTaskLedger.test.ts test/taskQueue.codex.test.ts test/llmNoteMetadata.test.ts
 git add src/modules/codexTaskLedger.ts src/modules/llmService.ts src/modules/noteGenerator.ts src/modules/taskQueue.ts src/modules/taskArtifacts.ts src/modules/llmNoteMetadata.ts src/hooks.ts test/codexTaskLedger.test.ts test/taskQueue.codex.test.ts test/llmNoteMetadata.test.ts
 git commit -m "feat: audit Codex executions in the task queue"
-~~~
+```
 
 ---
 
 ### Task 4: Full verification, packaging, and demo evidence
 
 **Files:**
+
 - Modify: `README.md`
 - Modify: `README-EN.md`
 - Modify: `docs/quick-start.md`
@@ -208,16 +225,17 @@ git commit -m "feat: audit Codex executions in the task queue"
 - Test: existing complete test suite and build outputs
 
 **Interfaces:**
+
 - Consumes all previous task commits and the design spec.
 - Produces a documented setup path, clean build, test report, and a redacted real-demo evidence file outside the plugin source tree.
 
 - [ ] **Step 1: Run static checks and the complete test suite.**
 
-~~~bash
+```bash
 npm run lint:check
 npm run build
 npm test
-~~~
+```
 
 Record exact failures; do not call the branch complete on a partial suite.
 
@@ -231,10 +249,10 @@ Record exact failures; do not call the branch complete on a partial suite.
 
 - [ ] **Step 6: Commit verification documentation.**
 
-~~~bash
+```bash
 git add README.md README-EN.md docs/quick-start.md docs/codex-app-server.md
 git commit -m "docs: document Codex app-server setup and verification"
-~~~
+```
 
 ---
 
@@ -247,4 +265,3 @@ git commit -m "docs: document Codex app-server setup and verification"
 - [ ] Interrupt, timeout, retry, and shutdown paths leave no zombie process.
 - [ ] Build, lint, i18n, and complete tests pass.
 - [ ] No installed XPI or production Zotero data changed during development.
-

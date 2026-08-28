@@ -136,4 +136,3 @@ status = planned | running | awaiting_approval | passed | partial | blocked | fa
 - 发布前保存原始 XPI、构建产物 SHA-256 和 Zotero profile 备份。
 - 首版默认不自动替换生产 XPI；先在临时 profile 安装验证。
 - 任何真实数据写入前先使用测试条目/测试库，失败时删除测试笔记并恢复 profile 快照。
-
