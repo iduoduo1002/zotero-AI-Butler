@@ -40,6 +40,8 @@ function codexError(fallback: string): string {
  * the JSON-RPC client. No Node.js process APIs are required in this layer.
  */
 export class CodexAppServerProcess implements CodexAppServerProcessLike {
+  private static readonly activeProcesses = new Set<CodexAppServerProcess>();
+
   private readonly raw: RawSubprocess;
   private readonly lineListeners = new Set<(line: string) => void>();
   private readonly exitListeners = new Set<(code?: number) => void>();
@@ -54,6 +56,7 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
 
   constructor(rawProcess: unknown) {
     this.raw = rawProcess as RawSubprocess;
+    CodexAppServerProcess.activeProcesses.add(this);
     this.startWaitLoop();
     this.startReadLoop();
     this.startStderrReadLoop();
@@ -119,6 +122,24 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
       throw new Error(codexError("codex-subprocess-not-started"));
     }
     return new CodexAppServerProcess(raw);
+  }
+
+  /** Stop every task-scoped Codex process during plugin shutdown. */
+  static cleanup(): void {
+    for (const process of Array.from(this.activeProcesses)) {
+      try {
+        const result = process.kill();
+        if (result && typeof (result as Promise<void>).catch === "function") {
+          void (result as Promise<void>).catch(() => undefined);
+        }
+      } catch {
+        // Best-effort cleanup; another process must still be stopped.
+      }
+    }
+  }
+
+  static cleanupAll(): void {
+    this.cleanup();
   }
 
   private static async resolveExecutablePath(
@@ -325,6 +346,7 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
 
   private notifyExit(code?: number): void {
     if (this.exitNotified) return;
+    CodexAppServerProcess.activeProcesses.delete(this);
     this.exitCode = code ?? this.exitCode;
     this.exitNotified = true;
     for (const listener of this.exitListeners) {

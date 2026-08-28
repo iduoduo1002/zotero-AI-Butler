@@ -99,6 +99,12 @@ type MultiModelSummaryResult = {
   noteHtml: string;
 };
 
+export type NoteWriteCandidate = {
+  html: string;
+  content: string;
+  metadata?: LLMNoteMetadata | null;
+};
+
 /**
  * AI 笔记生成器类
  *
@@ -159,6 +165,11 @@ export class NoteGenerator {
       summaryMode?: string;
       forceOverwrite?: boolean;
       abortSignal?: LLMAbortSignal;
+      metadata?: Record<string, unknown>;
+      retry?: boolean;
+      noteWriteGate?: (
+        candidate: NoteWriteCandidate,
+      ) => Promise<boolean | void>;
     },
   ): Promise<{ note: Zotero.Item; content: string }> {
     if (!isAiSourceItem(item)) {
@@ -188,8 +199,23 @@ export class NoteGenerator {
         LLMEndpointManager.isMultiModelSummaryEnabled()
           ? LLMEndpointManager.getMultiModelSummaryEndpoints()
           : [];
+      const codexRouteActive = (() => {
+        try {
+          return (
+            LLMEndpointManager.prepareRoute().endpoints[0]?.providerType ===
+            "codex-app-server"
+          );
+        } catch {
+          return false;
+        }
+      })();
       const useMultiModelSummary =
-        summaryMode === "single" && multiModelEndpoints.length > 0;
+        summaryMode === "single" &&
+        multiModelEndpoints.length > 0 &&
+        !codexRouteActive &&
+        !multiModelEndpoints.some(
+          (endpoint) => endpoint.providerType === "codex-app-server",
+        );
       const noteKind: AiNoteKind =
         summaryMode === "single" ? "summary" : "deepRead";
       const existingRecord = await AiNoteService.findNoteRecord(item, noteKind);
@@ -369,6 +395,7 @@ export class NoteGenerator {
           progressCallback,
           streamCallback,
           abortSignal: options?.abortSignal,
+          metadata: options?.metadata,
         });
         fullContent = multiModelResult.content;
         noteContentOverride = multiModelResult.noteHtml;
@@ -402,9 +429,11 @@ export class NoteGenerator {
             },
             transport: {
               abortSignal: options?.abortSignal,
+              retry: options?.retry,
               onStatus: (event) =>
                 this.forwardLLMStatus(progressCallback, event),
             },
+            metadata: options?.metadata,
             onProgress,
           });
         } else {
@@ -417,9 +446,11 @@ export class NoteGenerator {
             },
             transport: {
               abortSignal: options?.abortSignal,
+              retry: options?.retry,
               onStatus: (event) =>
                 this.forwardLLMStatus(progressCallback, event),
             },
+            metadata: options?.metadata,
             onProgress,
           });
         }
@@ -438,6 +469,9 @@ export class NoteGenerator {
           progressCallback,
           streamCallback,
           abortSignal: options?.abortSignal,
+          metadata: options?.metadata,
+          retry: options?.retry,
+          noteWriteGate: options?.noteWriteGate,
         });
         note = deepReadResult.note;
         fullContent = deepReadResult.content;
@@ -485,6 +519,18 @@ export class NoteGenerator {
           fullContent,
           AiNoteService.getTitle(noteKind),
         );
+
+      if (options?.noteWriteGate) {
+        const gateResult = await options.noteWriteGate({
+          html: noteContent,
+          content: fullContent,
+          metadata: llmMetadata,
+        });
+        if (gateResult === false) {
+          throw new Error(getString("common-unknown-error"));
+        }
+      }
+      throwIfAborted(options?.abortSignal);
       if (!noteContentOverride && llmMetadata) {
         noteContent = LLMNoteMetadataService.wrapHtml(noteContent, llmMetadata);
       }
@@ -648,6 +694,8 @@ export class NoteGenerator {
     ) => void;
     streamCallback?: (chunk: string) => void;
     abortSignal?: LLMAbortSignal;
+    metadata?: Record<string, unknown>;
+    retry?: boolean;
   }): Promise<{ content: string; noteHtml: string }> {
     const {
       item,
@@ -662,6 +710,7 @@ export class NoteGenerator {
       progressCallback,
       streamCallback,
       abortSignal,
+      metadata,
     } = params;
     const total = endpoints.length;
     let completed = 0;
@@ -692,6 +741,7 @@ export class NoteGenerator {
           pdfAttachmentMode,
           prefMode,
           abortSignal,
+          requestMetadata: metadata,
         });
         completed++;
         progressCallback?.(
@@ -817,6 +867,7 @@ export class NoteGenerator {
     pdfAttachmentMode: string;
     prefMode: string;
     abortSignal?: LLMAbortSignal;
+    requestMetadata?: Record<string, unknown>;
   }): Promise<MultiModelSummaryResult> {
     const {
       item,
@@ -828,6 +879,7 @@ export class NoteGenerator {
       pdfAttachmentMode,
       prefMode,
       abortSignal,
+      requestMetadata,
     } = params;
 
     if (summaryMode !== "single") {
@@ -850,6 +902,7 @@ export class NoteGenerator {
         attachmentMode,
       },
       transport: { abortSignal },
+      metadata: requestMetadata,
     });
     const content = response.text;
 
@@ -1149,6 +1202,9 @@ export class NoteGenerator {
     ) => void;
     streamCallback?: (chunk: string) => void;
     abortSignal?: LLMAbortSignal;
+    metadata?: Record<string, unknown>;
+    retry?: boolean;
+    noteWriteGate?: (candidate: NoteWriteCandidate) => Promise<boolean | void>;
   }): Promise<{
     note: Zotero.Item;
     content: string;
@@ -1246,6 +1302,8 @@ export class NoteGenerator {
         isBase64: params.isBase64,
         conversation: [{ role: "user", content: planningPrompt }],
         abortSignal: params.abortSignal,
+        metadata: params.metadata,
+        retry: params.retry,
         onStatus: (event) =>
           this.forwardLLMStatus(params.progressCallback, event),
       });
@@ -1372,13 +1430,16 @@ export class NoteGenerator {
     );
     const note = shouldResume
       ? (params.existing as Zotero.Item)
-      : await AiNoteService.saveGeneratedNote({
-          item: params.item,
-          kind: "deepRead",
-          html: skeleton,
-          existing: params.existing,
-          policy: params.policy === "append" ? "append" : "overwrite",
-        });
+      : params.noteWriteGate
+        ? this.createUnsavedDeepReadNote(params.item, skeleton)
+        : await AiNoteService.saveGeneratedNote({
+            item: params.item,
+            kind: "deepRead",
+            html: skeleton,
+            existing: params.existing,
+            policy: params.policy === "append" ? "append" : "overwrite",
+          });
+    const deferNoteWrite = Boolean(params.noteWriteGate && !shouldResume);
 
     if (shouldResume) {
       const currentHtml = ((note as any).getNote?.() as string) || "";
@@ -1424,7 +1485,7 @@ export class NoteGenerator {
         );
         if (nextHtml !== currentHtml) {
           (note as any).setNote?.(nextHtml);
-          await (note as any).saveTx?.();
+          if (!deferNoteWrite) await (note as any).saveTx?.();
         }
       });
       await writeQueue;
@@ -1447,7 +1508,7 @@ export class NoteGenerator {
         );
         if (nextHtml !== currentHtml) {
           (note as any).setNote?.(nextHtml);
-          await (note as any).saveTx?.();
+          if (!deferNoteWrite) await (note as any).saveTx?.();
         }
       });
       await writeQueue;
@@ -1477,6 +1538,8 @@ export class NoteGenerator {
           isBase64: params.isBase64,
           conversation: [{ role: "user", content: slot.prompt }],
           abortSignal: params.abortSignal,
+          metadata: params.metadata,
+          retry: params.retry,
           onProgress: (chunk) => {
             params.streamCallback?.(chunk);
             params.outputWindow?.appendContent(chunk);
@@ -1544,6 +1607,8 @@ export class NoteGenerator {
             isBase64: params.isBase64,
             conversation,
             abortSignal: params.abortSignal,
+            metadata: params.metadata,
+            retry: params.retry,
             onProgress: (chunk) => {
               params.streamCallback?.(chunk);
               params.outputWindow?.appendContent(chunk);
@@ -1607,6 +1672,8 @@ export class NoteGenerator {
             isBase64: params.isBase64,
             conversation: [{ role: "user", content: slot.prompt }],
             abortSignal: params.abortSignal,
+            metadata: params.metadata,
+            retry: params.retry,
             onProgress: streamLive
               ? (chunk) => {
                   params.streamCallback?.(chunk);
@@ -1710,7 +1777,7 @@ export class NoteGenerator {
           const nextHtml = resetRunningDeepReadSlots(currentHtml);
           if (nextHtml !== currentHtml) {
             (note as any).setNote?.(nextHtml);
-            await (note as any).saveTx?.();
+            if (!deferNoteWrite) await (note as any).saveTx?.();
           }
         });
         await writeQueue;
@@ -1730,7 +1797,41 @@ export class NoteGenerator {
     }
 
     await writeQueue;
-    const noteHtml = ((note as any).getNote?.() as string) || skeleton;
+    let noteHtml = ((note as any).getNote?.() as string) || skeleton;
+    if (deferNoteWrite && params.noteWriteGate) {
+      const gateMetadata = lastResponse
+        ? LLMNoteMetadataService.fromResponse("summary", lastResponse)
+        : undefined;
+      const gateResult = await params.noteWriteGate({
+        html: noteHtml,
+        content: collected.join("\n\n---\n\n") || noteHtml,
+        metadata: gateMetadata,
+      });
+      if (gateResult === false) {
+        throw new Error(getString("common-unknown-error"));
+      }
+      throwIfAborted(params.abortSignal);
+      const persistedHtml = gateMetadata
+        ? LLMNoteMetadataService.wrapHtml(noteHtml, gateMetadata)
+        : noteHtml;
+      const persisted = await AiNoteService.saveGeneratedNote({
+        item: params.item,
+        kind: "deepRead",
+        html: persistedHtml,
+        existing: params.existing,
+        policy: params.policy === "append" ? "append" : "overwrite",
+      });
+      (note as any).setNote?.(
+        ((persisted as any).getNote?.() as string) || noteHtml,
+      );
+      noteHtml = ((persisted as any).getNote?.() as string) || noteHtml;
+      return {
+        note: persisted,
+        content: collected.join("\n\n---\n\n") || noteHtml,
+        noteHtml,
+        response: lastResponse,
+      };
+    }
     return {
       note,
       content: collected.join("\n\n---\n\n") || noteHtml,
@@ -1772,6 +1873,18 @@ export class NoteGenerator {
     }
   }
 
+  private static createUnsavedDeepReadNote(
+    item: Zotero.Item,
+    html: string,
+  ): Zotero.Item {
+    const note = new Zotero.Item("note");
+    note.libraryID = item.libraryID;
+    note.parentID = item.id;
+    note.setNote(html);
+    note.addTag(AiNoteService.getTag("deepRead"));
+    return note;
+  }
+
   private static getActiveDeepReadTemplate(): MultiRoundPromptTemplate {
     const selectedTemplateId = (
       (getPref("multiRoundPromptTemplateId" as any) as string) || ""
@@ -1797,6 +1910,8 @@ export class NoteGenerator {
     abortSignal?: LLMAbortSignal;
     onProgress?: (chunk: string) => void;
     onStatus?: (event: LLMLifecycleEvent) => void;
+    metadata?: Record<string, unknown>;
+    retry?: boolean;
   }): Promise<LLMResponse> {
     const content = {
       kind: "legacy" as const,
@@ -1810,8 +1925,10 @@ export class NoteGenerator {
       conversation,
       transport: {
         abortSignal: params.abortSignal,
+        retry: params.retry,
         onStatus: params.onStatus,
       },
+      metadata: params.metadata,
       onProgress: params.onProgress,
     });
     let text = response.text;
@@ -1834,8 +1951,10 @@ export class NoteGenerator {
         conversation,
         transport: {
           abortSignal: params.abortSignal,
+          retry: params.retry,
           onStatus: params.onStatus,
         },
+        metadata: params.metadata,
         onProgress: params.onProgress,
       });
       response = { ...continuation, text: text + "\n\n" + continuation.text };

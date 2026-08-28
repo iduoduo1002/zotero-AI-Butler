@@ -367,4 +367,37 @@ describe("LLMNoteMetadataService", function () {
     expect(updated).to.equal("");
     expect(LLMNoteMetadataService.hasSummaryBlocks(updated)).to.equal(false);
   });
+
+  it("round-trips optional Codex execution metadata while keeping v1 parsing", function () {
+    const codexMetadata: LLMNoteMetadata = {
+      ...metadata("codex-block"),
+      executionId: "exec-1",
+      parentExecutionId: "sol-plan-1",
+      role: "luna",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      requestId: "request-1",
+      sourceSha256: "c".repeat(64),
+      status: "passed",
+      artifactSummary: "candidate artifact passed probe",
+    };
+    const wrapped = LLMNoteMetadataService.wrapHtml(
+      "<h2>AI 总结</h2><p>Codex output</p>",
+      codexMetadata,
+    );
+    const parsed = LLMNoteMetadataService.parseAll(wrapped);
+
+    expect(parsed).to.have.length(1);
+    expect(parsed[0].metadata).to.include({
+      executionId: "exec-1",
+      parentExecutionId: "sol-plan-1",
+      role: "luna",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      requestId: "request-1",
+      sourceSha256: "c".repeat(64),
+      status: "passed",
+      artifactSummary: "candidate artifact passed probe",
+    });
+  });
 });

@@ -12,6 +12,26 @@ export interface LLMNoteMetadata {
   providerName: string;
   modelId?: string;
   generatedAt: string;
+  executionId?: string;
+  parentExecutionId?: string;
+  role?: "sol" | "luna";
+  threadId?: string;
+  turnId?: string;
+  requestId?: string;
+  acceptanceExecutionId?: string;
+  sourceSha256?: string;
+  status?:
+    | "planned"
+    | "running"
+    | "awaiting_approval"
+    | "passed"
+    | "partial"
+    | "blocked"
+    | "failed";
+  artifactSummary?: string;
+  approvalPolicy?: string;
+  sandboxPolicy?: string;
+  networkAccess?: boolean;
 }
 
 export interface ParsedLLMNoteBlock {
@@ -348,6 +368,18 @@ export class LLMNoteMetadataService {
         response?.providerName || response?.providerId || "Unknown provider",
       modelId: response?.model,
       generatedAt: response?.generatedAt || new Date().toISOString(),
+      executionId: response?.executionId,
+      parentExecutionId: response?.parentExecutionId,
+      role: response?.role,
+      threadId: response?.threadId,
+      turnId: response?.turnId,
+      requestId: response?.requestId,
+      sourceSha256: response?.sourceSha256,
+      status: response?.status,
+      approvalPolicy: response?.approvalPolicy,
+      sandboxPolicy: response?.sandboxPolicy,
+      networkAccess: response?.networkAccess,
+      artifactSummary: response?.artifactSummary,
     };
   }
 

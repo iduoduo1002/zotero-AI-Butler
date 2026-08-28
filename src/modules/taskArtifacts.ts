@@ -15,6 +15,36 @@ export interface TaskArtifactProbeResult {
 }
 
 export class TaskArtifacts {
+  /**
+   * Probe a generated candidate before it is persisted.  The normal `probe`
+   * method intentionally checks the Zotero artifact on disk; this lightweight
+   * variant is the pre-write gate used by the Codex queue.
+   */
+  public static async probeCandidate(
+    taskType: FixedTaskArtifactType,
+    _item: Zotero.Item,
+    html: string,
+  ): Promise<TaskArtifactProbeResult> {
+    try {
+      if (typeof html !== "string" || !html.replace(/<[^>]*>/g, "").trim()) {
+        return { exists: false, reason: "candidate-empty" };
+      }
+      if (taskType === "deepRead" && hasIncompleteDeepReadContent(html)) {
+        return { exists: false, reason: "deep-read-slots-incomplete" };
+      }
+      if (taskType === "summary" || taskType === "deepRead") {
+        return { exists: true, reason: "candidate-ready" };
+      }
+      return { exists: true, reason: "candidate-ready" };
+    } catch {
+      return {
+        exists: false,
+        probeFailed: true,
+        reason: "candidate-probe-failed",
+      };
+    }
+  }
+
   public static async probe(
     taskType: FixedTaskArtifactType,
     item: Zotero.Item,

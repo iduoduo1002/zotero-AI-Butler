@@ -47,6 +47,7 @@ import type {
   LLMResponse,
   ProgressCb,
 } from "./llmproviders/types";
+import { CodexTaskLedger, type CodexExecutionContext } from "./codexTaskLedger";
 
 export type LLMTask =
   | "summary"
@@ -183,6 +184,75 @@ type ResolvedProvider = {
   endpoint?: LLMEndpoint;
 };
 
+type CodexRequestMetadata = {
+  itemKey?: string;
+  attachmentKey?: string;
+  sourceSha256?: string;
+  parentExecutionId?: string;
+  role?: "sol" | "luna";
+  model?: string;
+  reasoningEffort?: string;
+};
+
+let generatedExecutionId = 0;
+
+function createExecutionId(): string {
+  generatedExecutionId += 1;
+  return `codex-exec-${Date.now().toString(36)}-${generatedExecutionId}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readCodexRequestMetadata(
+  metadata?: Record<string, unknown>,
+): CodexRequestMetadata {
+  const nested = asRecord(metadata?.codex) || metadata || {};
+  const role =
+    nested.role === "luna" || nested.codexRole === "luna"
+      ? "luna"
+      : nested.role === "sol" || nested.codexRole === "sol"
+        ? "sol"
+        : undefined;
+  const readString = (...keys: string[]): string | undefined => {
+    for (const key of keys) {
+      const value = nested[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return undefined;
+  };
+  const sourceSha256 = readString("sourceSha256");
+  return {
+    itemKey: readString("itemKey", "zoteroItemKey"),
+    attachmentKey: readString("attachmentKey", "zoteroAttachmentKey"),
+    sourceSha256:
+      sourceSha256 && /^[a-f0-9]{64}$/i.test(sourceSha256)
+        ? sourceSha256.toLowerCase()
+        : undefined,
+    parentExecutionId: readString("parentExecutionId"),
+    role,
+    model: readString("model", "codexModel"),
+    reasoningEffort: readString("reasoningEffort", "codexReasoningEffort"),
+  };
+}
+
+function policyLabel(value: unknown): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value && typeof value === "object") return "configured";
+  return "unknown";
+}
+
+function logCodex(...args: Parameters<ZToolkit["log"]>): void {
+  try {
+    if (typeof ztoolkit !== "undefined") ztoolkit.log(...args);
+  } catch {
+    // Audit logging must never change Provider behavior.
+  }
+}
+
 export class LLMApiCallError extends Error {
   public readonly suppressTaskRetry = true;
   public readonly endpointId: string;
@@ -234,6 +304,19 @@ export class LLMService {
   private static readonly CONTINUATION_TAIL_CHARS = 12000;
   private static readonly CONTINUATION_DEDUPE_LOOKBACK_CHARS = 4000;
   private static readonly CONTINUATION_MIN_OVERLAP_CHARS = 16;
+  private static codexTaskLedger: CodexTaskLedger | null = null;
+
+  /** Replace the ledger in focused tests without changing production routing. */
+  static setCodexTaskLedger(ledger: CodexTaskLedger | null): void {
+    this.codexTaskLedger = ledger;
+  }
+
+  static getCodexTaskLedger(): CodexTaskLedger {
+    if (!this.codexTaskLedger) {
+      this.codexTaskLedger = new CodexTaskLedger();
+    }
+    return this.codexTaskLedger;
+  }
 
   static getRequestTimeout(): number {
     const raw = (getPref("requestTimeout") as string) || "300000";
@@ -450,6 +533,134 @@ export class LLMService {
   static getLLMOptions(): LLMOptions {
     const { id, endpoint } = this.resolveProvider();
     return this.buildOptions(endpoint || id);
+  }
+
+  private static isCodexEndpoint(endpoint: LLMEndpoint): boolean {
+    return endpoint.providerType === "codex-app-server";
+  }
+
+  private static buildAttemptOptions(
+    endpoint: LLMEndpoint,
+    generation: LLMGenerationOptions | undefined,
+    transport: LLMTransportOptions | undefined,
+    metadata: Record<string, unknown> | undefined,
+  ): { options: LLMOptions; context?: CodexExecutionContext } {
+    const options = this.buildOptions(endpoint, generation, transport);
+    if (!this.isCodexEndpoint(endpoint)) return { options };
+
+    const requestMetadata = readCodexRequestMetadata(metadata);
+    const role =
+      requestMetadata.role || options.role || endpoint.codexRole || "sol";
+    const roleModel = role === "luna" ? "gpt-5.6-luna" : "gpt-5.6-sol";
+    const roleEffort = role === "luna" ? "max" : "high";
+    const endpointModel = options.model || endpoint.model;
+    const endpointRole = endpoint.codexRole || "sol";
+    const shouldUseRoleDefaults =
+      !!requestMetadata.role &&
+      (!requestMetadata.model ||
+        endpointModel === "gpt-5.6-sol" ||
+        endpointModel === "gpt-5.6-luna" ||
+        endpointRole !== role);
+    options.role = role;
+    options.model =
+      requestMetadata.model ||
+      (shouldUseRoleDefaults ? roleModel : endpointModel);
+    options.reasoningEffort = (requestMetadata.reasoningEffort ||
+      (shouldUseRoleDefaults
+        ? roleEffort
+        : options.reasoningEffort || roleEffort)) as any;
+    options.executionId = createExecutionId();
+    options.parentExecutionId = requestMetadata.parentExecutionId;
+    options.codexSourceSha256 = requestMetadata.sourceSha256;
+    options.vendorOptions = {
+      ...(options.vendorOptions || {}),
+      codexAttempt: true,
+    };
+    const context: CodexExecutionContext = {
+      executionId: options.executionId,
+      parentExecutionId: options.parentExecutionId,
+      role,
+      model: options.model || roleModel,
+      reasoningEffort: String(options.reasoningEffort || roleEffort),
+      itemKey: requestMetadata.itemKey,
+      attachmentKey: requestMetadata.attachmentKey,
+      sourceSha256: requestMetadata.sourceSha256,
+      approvalPolicy: policyLabel(options.approvalPolicy),
+      sandboxPolicy: policyLabel(options.sandboxPolicy),
+      networkAccess: options.networkAccess === true,
+    };
+    return { options, context };
+  }
+
+  private static async startCodexAttempt(
+    options: LLMOptions,
+    context: CodexExecutionContext | undefined,
+    attempt: number,
+  ): Promise<{ ledger: CodexTaskLedger; executionId: string } | null> {
+    if (!context || !options.executionId) return null;
+    const ledger = this.getCodexTaskLedger();
+    try {
+      await ledger.start(context, "running", { attempt });
+      return { ledger, executionId: context.executionId };
+    } catch (error) {
+      logCodex("[AI-Butler] Codex execution ledger start failed:", error);
+      return null;
+    }
+  }
+
+  private static bindCodexTurnResult(
+    options: LLMOptions,
+    execution: { ledger: CodexTaskLedger; executionId: string } | null,
+  ): void {
+    if (!options.executionId) return;
+    options.codexRequestId = options.executionId;
+    options.onCodexTurnResult = async (result) => {
+      options.codexThreadId = result.threadId;
+      options.codexTurnId = result.turnId;
+      options.codexDiagnostics = result.diagnostics;
+      options.codexRequestId = result.requestId || options.executionId;
+      if (!execution) return;
+      try {
+        await execution.ledger.update(execution.executionId, "running", {
+          threadId: result.threadId,
+          turnId: result.turnId,
+          requestId: options.codexRequestId,
+          diagnostics: result.diagnostics,
+        });
+      } catch (error) {
+        logCodex("[AI-Butler] Codex execution ledger update failed:", error);
+      }
+    };
+  }
+
+  private static async completeCodexAttempt(
+    options: LLMOptions,
+    execution: { ledger: CodexTaskLedger; executionId: string } | null,
+    status: "passed" | "failed",
+    error?: unknown,
+  ): Promise<void> {
+    options.codexStatus = status;
+    if (!execution) return;
+    try {
+      if (status === "passed") {
+        await execution.ledger.complete(execution.executionId, {
+          threadId: options.codexThreadId,
+          turnId: options.codexTurnId,
+          requestId: options.codexRequestId,
+          diagnostics: options.codexDiagnostics,
+          outputSummary: "Codex text response received",
+        });
+      } else {
+        await execution.ledger.fail(execution.executionId, error, {
+          threadId: options.codexThreadId,
+          turnId: options.codexTurnId,
+          requestId: options.codexRequestId,
+          diagnostics: options.codexDiagnostics,
+        });
+      }
+    } catch (ledgerError) {
+      logCodex("[AI-Butler] Codex execution ledger close failed:", ledgerError);
+    }
   }
 
   static async generate(request: LLMGenerateRequest): Promise<LLMResponse> {
@@ -845,6 +1056,7 @@ export class LLMService {
           endpoint,
           request,
           prompt,
+          attempt,
         );
         LLMEndpointManager.markEndpointAttempted(endpoint.id);
         return response;
@@ -867,7 +1079,43 @@ export class LLMService {
     endpoint: LLMEndpoint,
     request: LLMGenerateRequest,
     prompt: string,
+    attempt = 0,
   ): Promise<LLMResponse> {
+    const { options, context } = this.buildAttemptOptions(
+      endpoint,
+      request.generation,
+      request.transport,
+      request.metadata,
+    );
+    const execution = await this.startCodexAttempt(options, context, attempt);
+    this.bindCodexTurnResult(options, execution);
+    try {
+      const response = await this.generateOnceWithEndpointBody(
+        endpoint,
+        request,
+        prompt,
+        options,
+      );
+      await this.completeCodexAttempt(options, execution, "passed");
+      return response;
+    } catch (error) {
+      await this.completeCodexAttempt(options, execution, "failed", error);
+      throw error;
+    }
+  }
+
+  private static async generateOnceWithEndpointBody(
+    endpoint: LLMEndpoint,
+    request: LLMGenerateRequest,
+    prompt: string,
+    options: LLMOptions,
+  ): Promise<LLMResponse> {
+    if (
+      endpoint.providerType === "codex-app-server" &&
+      request.task === "image-summary"
+    ) {
+      throw new Error("codex-image-summary-unsupported");
+    }
     const provider = this.getProviderForEndpoint(endpoint);
     const warnings: string[] = [];
     request.transport?.onStatus?.({
@@ -898,11 +1146,6 @@ export class LLMService {
         : undefined,
     );
     throwIfAborted(request.transport?.abortSignal);
-    const options = this.buildOptions(
-      endpoint,
-      request.generation,
-      request.transport,
-    );
     request.transport?.onStatus?.({
       stage: "llm-uploading",
       label: getString("progress-llm-uploading"),
@@ -1027,6 +1270,7 @@ export class LLMService {
         args: { count: text.length },
       }),
     });
+    if (options.executionId) options.codexStatus = "passed";
     return this.toResponse(
       text,
       endpoint.providerType,
@@ -1048,7 +1292,12 @@ export class LLMService {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       throwIfAborted(request.transport?.abortSignal);
       try {
-        return await this.generateOnceWithEndpoint(endpoint, request, prompt);
+        return await this.generateOnceWithEndpoint(
+          endpoint,
+          request,
+          prompt,
+          attempt,
+        );
       } catch (error: unknown) {
         if (isAbortError(error, request.transport?.abortSignal)) {
           throw normalizeAbortError(error, request.transport?.abortSignal);
@@ -1075,7 +1324,11 @@ export class LLMService {
       throwIfAborted(request.transport?.abortSignal);
       const endpoint = route.endpoints[attempt % route.endpoints.length];
       try {
-        const response = await this.chatOnceWithEndpoint(endpoint, request);
+        const response = await this.chatOnceWithEndpoint(
+          endpoint,
+          request,
+          attempt,
+        );
         LLMEndpointManager.markEndpointAttempted(endpoint.id);
         return response;
       } catch (error: unknown) {
@@ -1096,6 +1349,34 @@ export class LLMService {
   private static async chatOnceWithEndpoint(
     endpoint: LLMEndpoint,
     request: LLMChatRequest,
+    attempt = 0,
+  ): Promise<LLMResponse> {
+    const { options, context } = this.buildAttemptOptions(
+      endpoint,
+      request.generation,
+      request.transport,
+      request.metadata,
+    );
+    const execution = await this.startCodexAttempt(options, context, attempt);
+    this.bindCodexTurnResult(options, execution);
+    try {
+      const response = await this.chatOnceWithEndpointBody(
+        endpoint,
+        request,
+        options,
+      );
+      await this.completeCodexAttempt(options, execution, "passed");
+      return response;
+    } catch (error) {
+      await this.completeCodexAttempt(options, execution, "failed", error);
+      throw error;
+    }
+  }
+
+  private static async chatOnceWithEndpointBody(
+    endpoint: LLMEndpoint,
+    request: LLMChatRequest,
+    options: LLMOptions,
   ): Promise<LLMResponse> {
     const provider = this.getProviderForEndpoint(endpoint);
     const warnings: string[] = [];
@@ -1130,11 +1411,6 @@ export class LLMService {
     if (resolved.mode !== "single") {
       throw new Error(getString("llm-error-chat-multi-file-unsupported"));
     }
-    const options = this.buildOptions(
-      endpoint,
-      request.generation,
-      request.transport,
-    );
     request.transport?.onStatus?.({
       stage: "llm-uploading",
       label: getString("progress-llm-uploading"),
@@ -1220,6 +1496,7 @@ export class LLMService {
         args: { count: text.length },
       }),
     });
+    if (options.executionId) options.codexStatus = "passed";
     return this.toResponse(
       text,
       endpoint.providerType,
@@ -1240,7 +1517,7 @@ export class LLMService {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       throwIfAborted(request.transport?.abortSignal);
       try {
-        return await this.chatOnceWithEndpoint(endpoint, request);
+        return await this.chatOnceWithEndpoint(endpoint, request, attempt);
       } catch (error: unknown) {
         if (isAbortError(error, request.transport?.abortSignal)) {
           throw normalizeAbortError(error, request.transport?.abortSignal);
@@ -1351,6 +1628,28 @@ export class LLMService {
         "[AI-Butler] Removed hidden reasoning block(s) from LLM output.",
       );
     }
+    const codexMetadata = options.executionId
+      ? {
+          requestId: options.codexRequestId,
+          executionId: options.executionId,
+          parentExecutionId: options.parentExecutionId,
+          role: options.role,
+          threadId: options.codexThreadId,
+          turnId: options.codexTurnId,
+          diagnostics: options.codexDiagnostics,
+          sourceSha256: options.codexSourceSha256,
+          status: options.codexStatus,
+          approvalPolicy:
+            options.approvalPolicy === undefined
+              ? undefined
+              : policyLabel(options.approvalPolicy),
+          sandboxPolicy:
+            options.sandboxPolicy === undefined
+              ? undefined
+              : policyLabel(options.sandboxPolicy),
+          networkAccess: options.networkAccess,
+        }
+      : {};
     return {
       text: sanitizedText,
       providerId,
@@ -1360,6 +1659,7 @@ export class LLMService {
       model: options.model,
       generatedAt: new Date().toISOString(),
       warnings: warnings.length > 0 ? warnings : undefined,
+      ...codexMetadata,
     };
   }
 
@@ -1376,10 +1676,22 @@ export class LLMService {
     ) => void,
   ): Promise<ResolvedContent> {
     if (input.kind === "text") {
+      if (
+        endpoint?.providerType === "codex-app-server" &&
+        input.policy === "pdf-base64"
+      ) {
+        throw new Error(getString("endpoint-pdf-unsupported"));
+      }
       return { mode: "single", content: input.text, isBase64: false, warnings };
     }
 
     if (input.kind === "legacy") {
+      if (
+        endpoint?.providerType === "codex-app-server" &&
+        (input.isBase64 || input.policy === "pdf-base64")
+      ) {
+        throw new Error(getString("endpoint-pdf-unsupported"));
+      }
       return {
         mode: "single",
         content: input.isBase64
@@ -1443,6 +1755,12 @@ export class LLMService {
     )
       .trim()
       .toLowerCase();
+    if (endpoint?.providerType === "codex-app-server") {
+      if (rawMode === "pdf-base64") {
+        throw new Error(getString("endpoint-pdf-unsupported"));
+      }
+      return rawMode === "mineru" ? "mineru" : "text";
+    }
     let policy: LLMContentPolicy;
     if (rawMode === "text") policy = "text";
     else if (rawMode === "mineru") policy = "mineru";

@@ -57,6 +57,7 @@ export type CodexEventDiagnostic = {
 export type CodexTurnResult = {
   threadId: string;
   turnId: string;
+  requestId?: string;
   text: string;
   diagnostics: CodexEventDiagnostic[];
   /** Alias retained for callers that refer to streamed events as events. */
