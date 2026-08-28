@@ -1292,6 +1292,7 @@ describe("Codex task queue gate", function () {
     let persistedProbeCount = 0;
     let providerCall = 0;
     let acceptanceValue: "PASS" | "BLOCKED" = "PASS";
+    let acceptanceProviderReturned = false;
     let deferAcceptance = true;
     let releaseAcceptance!: () => void;
     const acceptanceRelease = new Promise<void>((resolve) => {
@@ -1349,10 +1350,10 @@ describe("Codex task queue gate", function () {
         if (providerCall === 1) eventLog.push("planning:done");
         if (providerCall === 2) eventLog.push("luna:done");
         if (providerCall === 3) {
+          acceptanceProviderReturned = false;
           eventLog.push("acceptance:start");
           signalAcceptanceStarted();
           if (deferAcceptance) await acceptanceRelease;
-          eventLog.push(`acceptance:done:${acceptanceValue}`);
         }
         expect(prompt).to.be.a("string");
         await options.onCodexTurnResult?.({
@@ -1363,6 +1364,10 @@ describe("Codex task queue gate", function () {
           events: [{ method: "turn/completed", status: "completed" }],
         });
         providerExecutionIds.push(options.executionId || "missing");
+        if (providerCall === 3) {
+          eventLog.push(`acceptance:done:${acceptanceValue}`);
+          acceptanceProviderReturned = true;
+        }
         return text;
       },
       chat: async () => "unexpected-chat",
@@ -1378,6 +1383,7 @@ describe("Codex task queue gate", function () {
     AiNoteService.findNoteRecord = async () => null;
     AiNoteService.saveGeneratedNote = async (options: any) => {
       expect(eventLog.at(-1)).to.equal("acceptance:done:PASS");
+      expect(acceptanceProviderReturned).to.equal(true);
       eventLog.push("save");
       const html = options.html as string;
       saveTxCount += 1;
