@@ -183,6 +183,12 @@ export class CodexAppServerProvider implements ILlmProvider {
 
     try {
       const result = await client.runTurn(params);
+      try {
+        await options.onCodexTurnResult?.(result);
+      } catch {
+        // Metadata consumers must not turn a successful text generation into
+        // a failed Provider call.
+      }
       return result.text;
     } finally {
       client.close();

@@ -7,8 +7,9 @@ import { providerRequestFailed } from "../shared/localizedErrors";
 type RawSubprocess = {
   stdin?: { write?: (line: string) => void | Promise<void> };
   stdout?: { readString?: () => string | Promise<string | Uint8Array> };
+  stderr?: { readString?: () => string | Promise<string | Uint8Array> };
   kill?: () => void | Promise<void>;
-  wait?: () => unknown;
+  wait?: () => unknown | Promise<unknown>;
 };
 
 type SubprocessModule = {
@@ -17,7 +18,14 @@ type SubprocessModule = {
     arguments: string[];
     stderr: "pipe";
   }): unknown | Promise<unknown>;
+  pathSearch?: (
+    command: string,
+    environment?: unknown,
+  ) => string | Promise<string | undefined | null>;
 };
+
+const MAX_DIAGNOSTIC_LENGTH = 4000;
+const STDERR_DRAIN_WAIT_MS = 100;
 
 function codexError(fallback: string): string {
   try {
@@ -36,13 +44,19 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
   private readonly lineListeners = new Set<(line: string) => void>();
   private readonly exitListeners = new Set<(code?: number) => void>();
   private lineBuffer = "";
+  private diagnosticBuffer = "";
   private closed = false;
   private exitNotified = false;
+  private exitCode: number | undefined;
   private readLoopPromise: Promise<void> | undefined;
+  private stderrLoopPromise: Promise<void> | undefined;
+  private waitPromise: Promise<void> | undefined;
 
   constructor(rawProcess: unknown) {
     this.raw = rawProcess as RawSubprocess;
+    this.startWaitLoop();
     this.startReadLoop();
+    this.startStderrReadLoop();
   }
 
   /** Wrap an already-created Zotero subprocess, chiefly useful to embedders. */
@@ -93,8 +107,7 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
     options: CodexAppServerProcessOptions = {},
   ): Promise<CodexAppServerProcess> {
     const subprocess = await this.loadSubprocessModule();
-    const command =
-      options.codexBinaryPath?.trim() || options.binaryPath?.trim() || "codex";
+    const command = await this.resolveExecutablePath(subprocess, options);
     const raw = await subprocess.call({
       command,
       // stdio JSONL is the app-server default; keeping the invocation to the
@@ -106,6 +119,29 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
       throw new Error(codexError("codex-subprocess-not-started"));
     }
     return new CodexAppServerProcess(raw);
+  }
+
+  private static async resolveExecutablePath(
+    subprocess: SubprocessModule,
+    options: CodexAppServerProcessOptions,
+  ): Promise<string> {
+    const configured =
+      options.codexBinaryPath?.trim() || options.binaryPath?.trim() || "codex";
+    if (this.isAbsolutePath(configured)) return configured;
+    if (typeof subprocess.pathSearch !== "function") {
+      throw new Error(codexError("codex-executable-path-search-unavailable"));
+    }
+    const searched = await subprocess.pathSearch(configured);
+    if (!searched || !this.isAbsolutePath(searched)) {
+      throw new Error(codexError("codex-executable-not-found"));
+    }
+    return searched;
+  }
+
+  private static isAbsolutePath(value: string): boolean {
+    return (
+      /^\//.test(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value)
+    );
   }
 
   write(line: string): void | Promise<void> {
@@ -126,7 +162,7 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
 
   onExit(listener: (code?: number) => void): () => void {
     if (this.exitNotified) {
-      listener();
+      listener(this.exitCode);
       return () => undefined;
     }
     this.exitListeners.add(listener);
@@ -136,23 +172,94 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
   kill(): void | Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    const result = this.raw.kill?.();
-    this.notifyExit();
-    return result;
+    let result: void | Promise<void>;
+    try {
+      result = this.raw.kill?.();
+    } catch (error) {
+      this.notifyExit();
+      throw error;
+    }
+    if (result && typeof (result as Promise<void>).then === "function") {
+      return Promise.resolve(result).then(() => {
+        this.notifyExit(this.exitCode);
+      });
+    }
+    this.notifyExit(this.exitCode);
   }
 
   /** Wait for the stream reader to stop, without making callers depend on it. */
   async wait(): Promise<void> {
-    await this.readLoopPromise;
+    await this.waitPromise;
+    await Promise.all(
+      [this.readLoopPromise, this.stderrLoopPromise].filter(
+        (task): task is Promise<void> => Boolean(task),
+      ),
+    );
+  }
+
+  getDiagnostics(): string {
+    return this.diagnosticBuffer
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(-MAX_DIAGNOSTIC_LENGTH);
   }
 
   private startReadLoop(): void {
     if (typeof this.raw.stdout?.readString !== "function") return;
     this.readLoopPromise = this.readLoop();
-    void this.readLoopPromise.catch(() => {
+    void this.readLoopPromise.catch(async () => {
+      // Zotero InputPipe may reject at EOF instead of returning an empty
+      // string. Let raw.wait() publish the authoritative exit code first.
+      if (this.waitPromise) await this.waitPromise;
       this.closed = true;
-      this.notifyExit();
+      this.notifyExit(this.exitCode);
     });
+  }
+
+  private startStderrReadLoop(): void {
+    if (typeof this.raw.stderr?.readString !== "function") return;
+    this.stderrLoopPromise = this.readStderrLoop();
+    void this.stderrLoopPromise.catch(() => undefined);
+  }
+
+  private async readStderrLoop(): Promise<void> {
+    const readString = this.raw.stderr?.readString;
+    if (typeof readString !== "function") return;
+    while (!this.closed) {
+      const rawChunk = await readString.call(this.raw.stderr);
+      const chunk = this.decodeChunk(rawChunk);
+      if (!chunk) break;
+      this.diagnosticBuffer += this.redactDiagnosticText(chunk);
+      if (this.diagnosticBuffer.length > MAX_DIAGNOSTIC_LENGTH) {
+        this.diagnosticBuffer = this.diagnosticBuffer.slice(
+          -MAX_DIAGNOSTIC_LENGTH,
+        );
+      }
+    }
+  }
+
+  private startWaitLoop(): void {
+    if (typeof this.raw.wait !== "function") return;
+    this.waitPromise = Promise.resolve()
+      .then(() => this.raw.wait?.())
+      .then(async (result) => {
+        const code = this.extractExitCode(result);
+        this.exitCode = code;
+        if (this.stderrLoopPromise) {
+          await Promise.race([
+            this.stderrLoopPromise.catch(() => undefined),
+            new Promise<void>((resolve) =>
+              setTimeout(resolve, STDERR_DRAIN_WAIT_MS),
+            ),
+          ]);
+        }
+        this.closed = true;
+        this.notifyExit(code);
+      })
+      .catch(() => {
+        this.closed = true;
+        this.notifyExit(this.exitCode);
+      });
   }
 
   private async readLoop(): Promise<void> {
@@ -189,7 +296,8 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
       this.lineBuffer = "";
     }
     this.closed = true;
-    this.notifyExit();
+    if (this.waitPromise) await this.waitPromise;
+    this.notifyExit(this.exitCode);
   }
 
   private decodeChunk(chunk: string | Uint8Array): string {
@@ -201,8 +309,23 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
     }
   }
 
+  private redactDiagnosticText(value: string): string {
+    return value
+      .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
+      .replace(/(^|[\s"'(])\/[^\s"'`)]*/g, "$1[PATH]")
+      .replace(/[A-Za-z]:\\[^\s"']+/g, "[PATH]");
+  }
+
+  private extractExitCode(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    const record = value && typeof value === "object" ? value : undefined;
+    const code = (record as { exitCode?: unknown } | undefined)?.exitCode;
+    return typeof code === "number" && Number.isFinite(code) ? code : undefined;
+  }
+
   private notifyExit(code?: number): void {
     if (this.exitNotified) return;
+    this.exitCode = code ?? this.exitCode;
     this.exitNotified = true;
     for (const listener of this.exitListeners) {
       try {

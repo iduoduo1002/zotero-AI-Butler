@@ -4,6 +4,9 @@ import type {
   CodexAppServerEvent,
   CodexAppServerProcessLike,
   CodexAppServerRunTurnParams,
+  CodexApprovalPolicy,
+  CodexSandboxMode,
+  CodexSandboxPolicy,
   CodexEventDiagnostic,
   CodexTurnResult,
 } from "./types";
@@ -14,6 +17,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
 
 type PendingRequest = {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
   timer?: ReturnType<typeof setTimeout>;
@@ -65,7 +69,7 @@ function safeText(value: unknown, maxLength = 240): string | undefined {
   if (typeof value !== "string") return undefined;
   return value
     .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
-    .replace(/(?:\/Users\/|\/home\/)[^\s"']+/g, "[PATH]")
+    .replace(/(^|[\s"'(])\/[^\s"'`)]*/g, "$1[PATH]")
     .replace(/[A-Za-z]:\\[^\s"']+/g, "[PATH]")
     .slice(0, maxLength);
 }
@@ -76,6 +80,220 @@ function codexError(fallback: string): string {
   } catch {
     return fallback;
   }
+}
+
+function policyError(code: string): Error {
+  return new Error(code);
+}
+
+function hasOnlyKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+): boolean {
+  return Object.keys(record).every((key) => allowed.includes(key));
+}
+
+function isAbsolutePath(value: string): boolean {
+  return (
+    /^\//.test(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value)
+  );
+}
+
+function normalizeApprovalPolicy(
+  value: unknown,
+): CodexApprovalPolicy | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "untrusted" || value === "on-request" || value === "never") {
+    return value;
+  }
+  const record = asRecord(value);
+  if (!record || !hasOnlyKeys(record, ["granular"])) {
+    throw policyError("codex-approval-policy-invalid");
+  }
+  const granular = asRecord(record?.granular);
+  if (!granular) throw policyError("codex-approval-policy-invalid");
+  if (
+    !hasOnlyKeys(granular, [
+      "sandbox_approval",
+      "sandboxApproval",
+      "rules",
+      "skill_approval",
+      "skillApproval",
+      "request_permissions",
+      "requestPermissions",
+      "mcp_elicitations",
+      "mcpElicitations",
+    ])
+  ) {
+    throw policyError("codex-approval-policy-invalid");
+  }
+  const readBoolean = (snake: string, camel: string): boolean => {
+    const candidate = granular[snake] ?? granular[camel];
+    if (typeof candidate !== "boolean") {
+      throw policyError("codex-approval-policy-invalid");
+    }
+    return candidate;
+  };
+  return {
+    granular: {
+      sandbox_approval: readBoolean("sandbox_approval", "sandboxApproval"),
+      rules: readBoolean("rules", "rules"),
+      skill_approval: readBoolean("skill_approval", "skillApproval"),
+      request_permissions: readBoolean(
+        "request_permissions",
+        "requestPermissions",
+      ),
+      mcp_elicitations: readBoolean("mcp_elicitations", "mcpElicitations"),
+    },
+  };
+}
+
+type NormalizedPolicies = {
+  approvalPolicy?: CodexApprovalPolicy;
+  threadSandbox?: CodexSandboxMode;
+  sandboxPolicy?: CodexSandboxPolicy;
+};
+
+function normalizeSandboxPolicy(
+  value: unknown,
+  networkAccess: unknown,
+): Pick<NormalizedPolicies, "threadSandbox" | "sandboxPolicy"> {
+  if (networkAccess !== undefined && typeof networkAccess !== "boolean") {
+    throw policyError("codex-network-policy-invalid");
+  }
+  const network = networkAccess as boolean | undefined;
+  if (value === undefined || value === null || value === "") {
+    return network === undefined
+      ? {}
+      : { sandboxPolicy: { type: "readOnly", networkAccess: network } };
+  }
+
+  if (value === "read-only") {
+    return {
+      threadSandbox: value,
+      sandboxPolicy: { type: "readOnly", networkAccess: network ?? false },
+    };
+  }
+  if (value === "workspace-write") {
+    return {
+      threadSandbox: value,
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [],
+        networkAccess: network ?? false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+    };
+  }
+  if (value === "danger-full-access") {
+    if (network !== undefined) {
+      throw policyError("codex-network-policy-invalid");
+    }
+    return {
+      threadSandbox: value,
+      sandboxPolicy: { type: "dangerFullAccess" },
+    };
+  }
+
+  const record = asRecord(value);
+  if (!record) throw policyError("codex-sandbox-policy-invalid");
+  const type = record?.type;
+  if (type === "dangerFullAccess") {
+    if (!hasOnlyKeys(record, ["type"])) {
+      throw policyError("codex-sandbox-policy-invalid");
+    }
+    if (network !== undefined)
+      throw policyError("codex-network-policy-invalid");
+    return {
+      threadSandbox: "danger-full-access",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    };
+  }
+  if (type === "readOnly") {
+    if (!hasOnlyKeys(record, ["type", "networkAccess"])) {
+      throw policyError("codex-sandbox-policy-invalid");
+    }
+    if (typeof record?.networkAccess !== "boolean") {
+      throw policyError("codex-sandbox-policy-invalid");
+    }
+    return {
+      threadSandbox: "read-only",
+      sandboxPolicy: {
+        type: "readOnly",
+        networkAccess: network ?? record.networkAccess,
+      },
+    };
+  }
+  if (type === "workspaceWrite") {
+    if (
+      !hasOnlyKeys(record, [
+        "type",
+        "writableRoots",
+        "networkAccess",
+        "excludeTmpdirEnvVar",
+        "excludeSlashTmp",
+      ])
+    ) {
+      throw policyError("codex-sandbox-policy-invalid");
+    }
+    const roots = record.writableRoots;
+    if (
+      !Array.isArray(roots) ||
+      !roots.every(
+        (root): root is string =>
+          typeof root === "string" && isAbsolutePath(root),
+      ) ||
+      typeof record.networkAccess !== "boolean" ||
+      typeof record.excludeTmpdirEnvVar !== "boolean" ||
+      typeof record.excludeSlashTmp !== "boolean"
+    ) {
+      throw policyError("codex-sandbox-policy-invalid");
+    }
+    return {
+      threadSandbox: "workspace-write",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: roots,
+        networkAccess: network ?? record.networkAccess,
+        excludeTmpdirEnvVar: record.excludeTmpdirEnvVar,
+        excludeSlashTmp: record.excludeSlashTmp,
+      },
+    };
+  }
+  throw policyError("codex-sandbox-policy-invalid");
+}
+
+function normalizePolicies(
+  params: CodexAppServerRunTurnParams,
+): NormalizedPolicies {
+  if (
+    params.mcpEnabled !== undefined &&
+    typeof params.mcpEnabled !== "boolean"
+  ) {
+    throw policyError("codex-mcp-policy-invalid");
+  }
+  if (params.mcpEnabled === true) {
+    throw policyError("codex-mcp-reserved");
+  }
+  return {
+    approvalPolicy: normalizeApprovalPolicy(params.approvalPolicy),
+    ...normalizeSandboxPolicy(params.sandboxPolicy, params.networkAccess),
+  };
+}
+
+function makeRequestError(method: string, error: unknown): Error {
+  const record = asRecord(error);
+  const code =
+    typeof record?.code === "number"
+      ? String(record.code)
+      : safeText(record?.code, 40);
+  // Do not forward the server's message: app-server versions have echoed user
+  // input in error text in the past. The method/code remain actionable while
+  // keeping the provider boundary content-safe.
+  return new Error(
+    `Codex app-server request failed: ${method}${code ? ` (${code})` : ""}`,
+  );
 }
 
 function redactDiagnostic(
@@ -116,9 +334,12 @@ function makeAbortError(): Error {
   return error;
 }
 
-function makeProcessExitError(code?: number): Error {
+function makeProcessExitError(code?: number, diagnostics?: string): Error {
+  const safeDiagnostics = safeText(diagnostics, 4000)
+    ?.replace(/\s+/g, " ")
+    .trim();
   return new Error(
-    `Codex app-server process exited${code === undefined ? "" : ` with code ${code}`}`,
+    `Codex app-server process exited${code === undefined ? "" : ` with code ${code}`}${safeDiagnostics ? `: ${safeDiagnostics}` : ""}`,
   );
 }
 
@@ -164,6 +385,7 @@ export class CodexAppServerClient {
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
       const pending: PendingRequest = {
+        method,
         resolve: (value) => {
           if (pending.timer) clearTimeout(pending.timer);
           this.pending.delete(id);
@@ -220,6 +442,7 @@ export class CodexAppServerClient {
     if (!params.executionId?.trim()) {
       throw new Error(codexError("codex-execution-id-required"));
     }
+    const policies = normalizePolicies(params);
     const diagnostics: CodexEventDiagnostic[] = [];
     const eventTasks: Promise<void>[] = [];
     let threadId = params.threadId?.trim() || "";
@@ -230,6 +453,7 @@ export class CodexAppServerClient {
     let abortHandler: (() => void) | undefined;
     let unsubscribeEvents: (() => void) | undefined;
     let rejectActiveTurn: ((error: Error) => void) | undefined;
+    let taskProcessKilled = false;
 
     const resultPromise = new Promise<CodexTurnResult>((resolve, reject) => {
       const cleanup = () => {
@@ -272,9 +496,14 @@ export class CodexAppServerClient {
           if (typeof deltaValue === "string") text += deltaValue;
         }
 
-        const callbackTask = Promise.resolve(params.onEvent?.(event)).catch(
-          () => undefined,
-        );
+        let callbackTask: Promise<void>;
+        try {
+          callbackTask = Promise.resolve(params.onEvent?.(event)).catch(
+            () => undefined,
+          );
+        } catch {
+          callbackTask = Promise.resolve();
+        }
         eventTasks.push(callbackTask);
 
         if (event.method !== "turn/completed") return;
@@ -296,16 +525,38 @@ export class CodexAppServerClient {
       rejectActiveTurn = (error) => rejectResult(error);
       this.activeTurnRejectors.add(rejectActiveTurn);
 
+      const killTaskProcess = () => {
+        if (taskProcessKilled) return;
+        taskProcessKilled = true;
+        try {
+          const killResult = this.process.kill();
+          if (
+            killResult &&
+            typeof (killResult as Promise<void>).catch === "function"
+          ) {
+            void (killResult as Promise<void>).catch(() => undefined);
+          }
+        } catch {
+          // Preserve the original cancellation/timeout error.
+        }
+      };
+
       const interrupt = () => {
         if (settled) return;
+        const abortError = makeAbortError();
+        rejectResult(abortError);
         if (threadId && turnId) {
           void this.request(
             "turn/interrupt",
             { threadId, turnId },
             Math.min(this.options.requestTimeoutMs ?? 5_000, 5_000),
-          ).catch(() => undefined);
+          ).catch(() => killTaskProcess());
+        } else {
+          // A turn may already be running while the turn/start response is in
+          // flight. Kill this task-scoped process rather than leaving a
+          // background turn with no interruptible id.
+          killTaskProcess();
         }
-        rejectResult(makeAbortError());
       };
       abortHandler = interrupt;
       params.abortSignal?.addEventListener?.("abort", abortHandler, {
@@ -334,17 +585,7 @@ export class CodexAppServerClient {
               Math.min(this.options.requestTimeoutMs ?? 5_000, 5_000),
             ).catch(() => undefined);
           }
-          try {
-            const killResult = this.process.kill();
-            if (
-              killResult &&
-              typeof (killResult as Promise<void>).catch === "function"
-            ) {
-              void (killResult as Promise<void>).catch(() => undefined);
-            }
-          } catch {
-            // Preserve the timeout as the user-visible error.
-          }
+          killTaskProcess();
         }, turnTimeoutMs);
       }
 
@@ -356,11 +597,11 @@ export class CodexAppServerClient {
           if (!threadId) {
             const threadResult = await this.request("thread/start", {
               model: params.model,
-              ...(params.approvalPolicy
-                ? { approvalPolicy: params.approvalPolicy }
+              ...(policies.approvalPolicy
+                ? { approvalPolicy: policies.approvalPolicy }
                 : {}),
-              ...(params.sandboxPolicy !== undefined
-                ? { sandbox: params.sandboxPolicy }
+              ...(policies.threadSandbox
+                ? { sandbox: policies.threadSandbox }
                 : {}),
             });
             threadId = readNestedId(threadResult, "thread");
@@ -371,14 +612,15 @@ export class CodexAppServerClient {
 
           const turnResult = await this.request("turn/start", {
             threadId,
-            input: [{ type: "text", text: params.input }],
+            input: [{ type: "text", text: params.input, text_elements: [] }],
             model: params.model,
             effort: params.reasoningEffort,
-            ...(params.approvalPolicy
-              ? { approvalPolicy: params.approvalPolicy }
+            clientUserMessageId: params.executionId,
+            ...(policies.approvalPolicy
+              ? { approvalPolicy: policies.approvalPolicy }
               : {}),
-            ...(params.sandboxPolicy !== undefined
-              ? { sandboxPolicy: params.sandboxPolicy }
+            ...(policies.sandboxPolicy
+              ? { sandboxPolicy: policies.sandboxPolicy }
               : {}),
           });
           turnId = readNestedId(turnResult, "turn");
@@ -482,16 +724,7 @@ export class CodexAppServerClient {
       const pending = this.pending.get(message.id);
       if (pending) {
         if (message.error !== undefined) {
-          const errorRecord = asRecord(message.error);
-          pending.reject(
-            new Error(
-              `Codex app-server request failed${
-                safeText(errorRecord?.message || message.error, 240)
-                  ? `: ${safeText(errorRecord?.message || message.error, 240)}`
-                  : ""
-              }`,
-            ),
-          );
+          pending.reject(makeRequestError(pending.method, message.error));
         } else {
           pending.resolve(message.result);
         }
@@ -517,7 +750,8 @@ export class CodexAppServerClient {
   private handleExit(code?: number): void {
     if (this.closed) return;
     this.closed = true;
-    const error = makeProcessExitError(code);
+    const diagnostics = this.process.getDiagnostics?.();
+    const error = makeProcessExitError(code, diagnostics);
     this.processExitError = error;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();

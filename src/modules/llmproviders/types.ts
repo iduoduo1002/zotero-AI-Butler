@@ -1,4 +1,5 @@
 import { getString } from "../../utils/locale";
+import type { CodexTurnResult } from "./codexAppServer/types";
 export type ProgressCb = (chunk: string) => Promise<void> | void;
 
 export type LLMAbortSignal = {
@@ -56,6 +57,8 @@ export type LLMOptions = {
   networkAccess?: boolean;
   mcpEnabled?: boolean;
   codexThreadId?: string;
+  /** Optional metadata handoff without changing the legacy string return API. */
+  onCodexTurnResult?: (result: CodexTurnResult) => void | Promise<void>;
 };
 
 export type LLMProviderParam =

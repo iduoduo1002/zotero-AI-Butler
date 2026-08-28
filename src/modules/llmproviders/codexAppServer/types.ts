@@ -6,6 +6,7 @@ export interface CodexAppServerProcessLike {
   onLine(listener: (line: string) => void): void | (() => void);
   onExit(listener: (code?: number) => void): void | (() => void);
   kill(): void | Promise<void>;
+  getDiagnostics?(): string;
 }
 
 export type CodexAppServerEvent = {
@@ -13,6 +14,35 @@ export type CodexAppServerEvent = {
   method: string;
   params?: unknown;
 };
+
+/** Stable app-server approval values accepted by Codex's generated schema. */
+export type CodexApprovalPolicy =
+  | "untrusted"
+  | "on-request"
+  | "never"
+  | {
+      granular: {
+        sandbox_approval: boolean;
+        rules: boolean;
+        skill_approval: boolean;
+        request_permissions: boolean;
+        mcp_elicitations: boolean;
+      };
+    };
+
+export type CodexSandboxMode =
+  "read-only" | "workspace-write" | "danger-full-access";
+
+export type CodexSandboxPolicy =
+  | { type: "dangerFullAccess" }
+  | { type: "readOnly"; networkAccess: boolean }
+  | {
+      type: "workspaceWrite";
+      writableRoots: string[];
+      networkAccess: boolean;
+      excludeTmpdirEnvVar: boolean;
+      excludeSlashTmp: boolean;
+    };
 
 /** Deliberately small diagnostics that never contain prompt or document text. */
 export type CodexEventDiagnostic = {
