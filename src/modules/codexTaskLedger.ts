@@ -208,7 +208,7 @@ function safeText(
   }
   return trimmed
     .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
-    .replace(/(?:sk|pk)-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+    .replace(/(^|[^A-Za-z0-9])(?:sk|pk)-[A-Za-z0-9_-]{8,}/gi, "$1[REDACTED]")
     .replace(/(^|[\s"'(])\/(?!\/)[^\s"'`)]*/g, "$1[PATH]")
     .replace(/[A-Za-z]:[\\/][^\s"']+/g, "[PATH]")
     .slice(0, maxLength);
@@ -430,21 +430,36 @@ function createDefaultFileSystem(): CodexTaskLedgerFileSystem {
   return {
     async ensureDirectory(path: string): Promise<void> {
       const io = (globalThis as any).IOUtils;
-      if (typeof io?.makeDirectory !== "function") {
+      const osFile = (globalThis as any).OS?.File;
+      if (typeof io?.makeDirectory === "function") {
+        await io.makeDirectory(path, {
+          ignoreExisting: true,
+          createAncestors: true,
+        });
+        return;
+      }
+      if (typeof osFile?.makeDir === "function") {
+        await osFile.makeDir(path, { ignoreExisting: true });
+        return;
+      }
+      if (!io && !osFile) {
         throw new Error(getString("common-unknown-error"));
       }
-      await io.makeDirectory(path, {
-        ignoreExisting: true,
-        createAncestors: true,
-      });
+      throw new Error(getString("common-unknown-error"));
     },
     async readTextFile(path: string): Promise<string> {
       const io = (globalThis as any).IOUtils;
-      if (typeof io?.read !== "function") {
+      const osFile = (globalThis as any).OS?.File;
+      if (
+        typeof io?.read !== "function" &&
+        typeof osFile?.read !== "function"
+      ) {
         throw new Error(getString("common-unknown-error"));
       }
       try {
-        const value = await io.read(path);
+        const value = await (typeof io?.read === "function"
+          ? io.read(path)
+          : osFile.read(path));
         if (typeof value === "string") return value;
         return new TextDecoder().decode(value);
       } catch {
@@ -453,18 +468,58 @@ function createDefaultFileSystem(): CodexTaskLedgerFileSystem {
     },
     async appendTextFile(path: string, text: string): Promise<void> {
       const io = (globalThis as any).IOUtils;
-      if (typeof io?.write !== "function") {
+      const osFile = (globalThis as any).OS?.File;
+      if (!io && !osFile) {
         throw new Error(getString("common-unknown-error"));
       }
+
+      const bytes = new TextEncoder().encode(text);
+      if (typeof io?.append === "function") {
+        await io.append(path, bytes);
+        return;
+      }
+
       let previous = "";
       try {
-        const value = await io.read(path);
+        const value = await (typeof io?.read === "function"
+          ? io.read(path)
+          : osFile.read(path));
         previous =
           typeof value === "string" ? value : new TextDecoder().decode(value);
       } catch {
         // The file is created on the first append.
       }
-      await io.write(path, new TextEncoder().encode(previous + text));
+
+      const nextBytes = new TextEncoder().encode(previous + text);
+      const tempPath = `${path}.tmp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const atomicOwner = typeof io?.writeAtomic === "function" ? io : osFile;
+      if (atomicOwner) {
+        await atomicOwner.writeAtomic(path, nextBytes, { tmpPath: tempPath });
+        return;
+      }
+
+      const writeOwner = typeof io?.write === "function" ? io : osFile;
+      const moveOwner = typeof io?.move === "function" ? io : osFile;
+      const removeOwner = typeof io?.remove === "function" ? io : osFile;
+      if (
+        typeof writeOwner?.write === "function" &&
+        typeof moveOwner?.move === "function"
+      ) {
+        await writeOwner.write(tempPath, nextBytes);
+        try {
+          await moveOwner.move(tempPath, path, { noOverwrite: false });
+        } catch (error) {
+          try {
+            await removeOwner?.remove?.(tempPath);
+          } catch {
+            // Best effort cleanup; the target ledger remains untouched.
+          }
+          throw error;
+        }
+        return;
+      }
+
+      throw new Error(getString("common-unknown-error"));
     },
   };
 }

@@ -2250,6 +2250,8 @@ export class TaskQueueManager {
     task.progress = 0;
     task.error = undefined;
     task.errorDetails = undefined;
+    task.codexDecision = undefined;
+    task.failureCode = undefined;
     task.retryCount = 0;
     task.startedAt = undefined;
     task.completedAt = undefined;
@@ -3587,6 +3589,8 @@ export class TaskQueueManager {
       `retryCount: ${task.retryCount}`,
       `maxRetries: ${task.maxRetries}`,
       `workflowStage: ${task.workflowStage || noneValue}`,
+      `codexDecision: ${task.codexDecision || noneValue}`,
+      `failureCode: ${task.failureCode || noneValue}`,
       `zoteroVersion: ${runtime.zoteroVersion || unknownValue}`,
       `platform: ${runtime.platform || unknownValue}`,
       `userAgent: ${runtime.userAgent || unknownValue}`,

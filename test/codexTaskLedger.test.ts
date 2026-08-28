@@ -206,4 +206,70 @@ describe("CodexTaskLedger", function () {
     ]);
     expect(records.at(-1)?.status).to.equal("awaiting_approval");
   });
+
+  it("uses the default IOUtils atomic adapter without corrupting a partial write", async function () {
+    const globalValue = globalThis as any;
+    const previousIo = globalValue.IOUtils;
+    const filePath = "/tmp/ai-butler/default-adapter.jsonl";
+    const files = new Map<string, Uint8Array>();
+    let failWrite = false;
+    const atomicCalls: Array<{ path: string; tmpPath?: string }> = [];
+    globalValue.IOUtils = {
+      makeDirectory: async () => undefined,
+      read: async (path: string) => {
+        const bytes = files.get(path);
+        if (!bytes) throw new Error("missing file");
+        return bytes;
+      },
+      writeAtomic: async (
+        path: string,
+        bytes: Uint8Array,
+        options?: { tmpPath?: string },
+      ) => {
+        atomicCalls.push({ path, tmpPath: options?.tmpPath });
+        if (failWrite) throw new Error("simulated partial write");
+        files.set(path, new Uint8Array(bytes));
+      },
+    };
+
+    try {
+      const ledger = new CodexTaskLedger(filePath, {
+        idFactory: () => "default-adapter-exec",
+      });
+      const started = await ledger.start(context(), "running");
+      const beforeFailedWrite = new Uint8Array(files.get(filePath)!);
+      failWrite = true;
+
+      let thrown: unknown;
+      try {
+        await ledger.update(started.executionId, "awaiting_approval");
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).to.be.instanceOf(Error);
+      expect(Array.from(files.get(filePath)!)).to.deep.equal(
+        Array.from(beforeFailedWrite),
+      );
+      expect(
+        (await ledger.readAll()).map((record) => record.status),
+      ).to.deep.equal(["running"]);
+
+      failWrite = false;
+      await ledger.update(started.executionId, "awaiting_approval");
+      expect(atomicCalls).to.have.length(3);
+      expect(atomicCalls.every((call) => call.path === filePath)).to.equal(
+        true,
+      );
+      expect(
+        atomicCalls.every((call) =>
+          call.tmpPath?.startsWith(`${filePath}.tmp-`),
+        ),
+      ).to.equal(true);
+      expect(
+        (await ledger.readAll()).map((record) => record.status),
+      ).to.deep.equal(["running", "awaiting_approval"]);
+    } finally {
+      globalValue.IOUtils = previousIo;
+    }
+  });
 });

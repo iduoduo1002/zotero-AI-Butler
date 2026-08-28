@@ -19,6 +19,7 @@ import { NoteGenerator } from "../src/modules/noteGenerator";
 import { TaskArtifacts } from "../src/modules/taskArtifacts";
 import { AiNoteService } from "../src/modules/aiNoteService";
 import { PDFExtractor } from "../src/modules/pdfExtractor";
+import { TaskQueueView } from "../src/modules/views/TaskQueueView";
 
 class MemoryLedgerFileSystem implements CodexTaskLedgerFileSystem {
   content = "";
@@ -1221,6 +1222,248 @@ describe("Codex task queue gate", function () {
     }
   });
 
+  it("runs the production queue through Sol, real NoteGenerator/Luna, and Sol acceptance", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const previousProvider = ProviderRegistry.get("codex-app-server");
+    const previousHasAnalyzable = ContentExtractor.hasAnalyzableAttachment;
+    const previousAttachments = PDFExtractor.getAllPdfAttachments;
+    const previousExtractText = PDFExtractor.extractTextFromItem;
+    const previousFindNoteRecord = AiNoteService.findNoteRecord;
+    const previousSaveGeneratedNote = AiNoteService.saveGeneratedNote;
+    const previousProbeCandidate = TaskArtifacts.probeCandidate;
+    const previousProbe = TaskArtifacts.probe;
+    const prefs = new Map<string, unknown>([
+      ["extensions.zotero.aiButler.noteStrategy", "overwrite"],
+      ["extensions.zotero.aiButler.summaryMode", "single"],
+      ["extensions.zotero.aiButler.pdfProcessMode", "text"],
+      ["extensions.zotero.aiButler.pdfAttachmentMode", "default"],
+      ["extensions.zotero.aiButler.enablePdfSizeLimit", false],
+      ["extensions.zotero.aiButler.enableTableOnSingleNote", false],
+    ]);
+    const item = {
+      id: 22,
+      key: "ITEM-PRODUCTION",
+      libraryID: 1,
+      getField: () => "Production paper",
+      getAttachments: () => [220],
+      isNote: () => false,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+    } as unknown as Zotero.Item;
+    const attachment = {
+      id: 220,
+      key: "ATTACH-PRODUCTION",
+      attachmentContentType: "application/pdf",
+      getFilePathAsync: async () => undefined,
+    } as unknown as Zotero.Item;
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => prefs.get(key),
+        set: (key: string, value: unknown) => prefs.set(key, value),
+        clear: (key: string) => prefs.delete(key),
+      },
+      Items: {
+        getAsync: async (id: number) => (id === 22 ? item : attachment),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+
+    const fileSystem = new MemoryLedgerFileSystem();
+    const ledger = new CodexTaskLedger("/tmp/ledger-production.jsonl", {
+      fileSystem,
+    });
+    const roles: string[] = [];
+    const providerExecutionIds: string[] = [];
+    let saveTxCount = 0;
+    let persistedProbeCount = 0;
+    let providerCall = 0;
+    let acceptanceValue: "PASS" | "BLOCKED" = "PASS";
+    const note = {
+      id: 221,
+      parentID: item.id,
+      getNote: () => "<h2>AI Summary</h2><p>Luna candidate</p>",
+      setNote: () => undefined,
+      saveTx: async () => {
+        saveTxCount += 1;
+      },
+    } as unknown as Zotero.Item;
+    ProviderRegistry.register({
+      id: "codex-app-server",
+      capabilities: {
+        supportsText: true,
+        supportsStreaming: true,
+        supportsPdfBase64: false,
+        maxPdfFiles: 0,
+        supportsSystemPrompt: true,
+        supportedParams: ["stream", "reasoningEffort"],
+      },
+      generateSummary: async (_content, isBase64, prompt, options) => {
+        expect(isBase64).to.equal(false);
+        roles.push(options.role || "unknown");
+        providerCall += 1;
+        const text =
+          providerCall === 1
+            ? JSON.stringify({
+                taskType: "summary",
+                outputSchema: { format: "markdown", required: ["summary"] },
+                inputBoundaries: ["selected item and attachment only"],
+                acceptanceDimensions: ["candidate evidence"],
+                acceptanceCriteria: ["candidate probe passes"],
+                outputSummary: "bounded candidate",
+              })
+            : providerCall === 2
+              ? "Luna candidate"
+              : JSON.stringify({
+                  acceptance: acceptanceValue,
+                  criteria: [
+                    {
+                      criterion: "candidate probe passes",
+                      verdict: "PASS",
+                      evidence: "candidate probe and persisted probe passed",
+                    },
+                  ],
+                });
+        expect(prompt).to.be.a("string");
+        await options.onCodexTurnResult?.({
+          threadId: `production-thread-${providerCall}`,
+          turnId: `production-turn-${providerCall}`,
+          text,
+          diagnostics: [{ method: "turn/completed", status: "completed" }],
+          events: [{ method: "turn/completed", status: "completed" }],
+        });
+        providerExecutionIds.push(options.executionId || "missing");
+        return text;
+      },
+      chat: async () => "unexpected-chat",
+      testConnection: async () => "OK",
+    } as any);
+    LLMEndpointManager.saveEndpoints([
+      LLMEndpointManager.createEndpoint("codex-app-server", "sol"),
+    ]);
+    LLMService.setCodexTaskLedger(ledger);
+    ContentExtractor.hasAnalyzableAttachment = async () => true;
+    PDFExtractor.getAllPdfAttachments = async () => [attachment];
+    PDFExtractor.extractTextFromItem = async () => "safe extracted text";
+    AiNoteService.findNoteRecord = async () => null;
+    AiNoteService.saveGeneratedNote = async (options: any) => {
+      const html = options.html as string;
+      saveTxCount += 1;
+      (note as any).getNote = () => html;
+      return note;
+    };
+    TaskArtifacts.probeCandidate = async () => ({
+      exists: true,
+      reason: "candidate-ready",
+    });
+    TaskArtifacts.probe = async () => {
+      persistedProbeCount += 1;
+      expect(saveTxCount).to.be.greaterThan(0);
+      return { exists: true, reason: "persisted" };
+    };
+    const manager = Object.create(TaskQueueManager.prototype) as any;
+    manager.tasks = new Map([
+      [
+        "summary-task-production",
+        {
+          id: "summary-task-production",
+          itemId: item.id,
+          title: "Production paper",
+          status: TaskStatus.PENDING,
+          progress: 0,
+          createdAt: new Date(),
+          retryCount: 0,
+          maxRetries: 1,
+          taskType: "summary",
+        },
+      ],
+    ]);
+    manager.processingTasks = new Set();
+    manager.taskAbortControllers = new Map();
+    manager.abortingTasks = new Set();
+    manager.progressCallbacks = new Set();
+    manager.completeCallbacks = new Set();
+    manager.streamCallbacks = new Set();
+    manager.deletedFixedTasks = new Map();
+    manager.clearedDeletedFixedTaskKeys = new Set();
+    manager.saveToStorage = async () => undefined;
+    manager.isRunning = true;
+    try {
+      const quickFail = await manager.executeTask("summary-task-production");
+      const task = manager.tasks.get("summary-task-production");
+      expect(quickFail).to.equal(false);
+      expect(task.status).to.equal(TaskStatus.COMPLETED);
+      expect(task.codexDecision).to.equal("PASS");
+      expect(roles.slice(0, 3)).to.deep.equal(["sol", "luna", "sol"]);
+      expect(providerExecutionIds).to.have.length(3);
+      expect(new Set(providerExecutionIds).size).to.equal(3);
+      expect(saveTxCount).to.equal(1);
+      expect(persistedProbeCount).to.equal(1);
+
+      acceptanceValue = "BLOCKED";
+      providerCall = 0;
+      saveTxCount = 0;
+      persistedProbeCount = 0;
+      manager.tasks.set("summary-task-production", {
+        id: "summary-task-production",
+        itemId: item.id,
+        title: "Production paper",
+        status: TaskStatus.PENDING,
+        progress: 0,
+        createdAt: new Date(),
+        retryCount: 0,
+        maxRetries: 1,
+        taskType: "summary",
+      });
+      await manager.executeTask("summary-task-production");
+      const blockedTask = manager.tasks.get("summary-task-production");
+      expect(blockedTask.status).to.equal(TaskStatus.FAILED);
+      expect(blockedTask.codexDecision).to.equal("BLOCKED");
+      expect(blockedTask.failureCode).to.equal("codex-sol-acceptance-blocked");
+      expect(blockedTask.retryCount).to.equal(0);
+      expect(saveTxCount).to.equal(0);
+      expect(persistedProbeCount).to.equal(0);
+      expect(roles.slice(3)).to.deep.equal(["sol", "luna", "sol"]);
+      const records = await ledger.readAll();
+      const aggregateRecords = records.filter(
+        (record) => record.itemKey === item.key,
+      );
+      expect(
+        aggregateRecords.some((record) => record.status === "passed"),
+      ).to.equal(true);
+      expect(
+        aggregateRecords.some(
+          (record) => record.providerExecutionIds?.length === 1,
+        ),
+      ).to.equal(true);
+    } finally {
+      if (previousProvider) ProviderRegistry.register(previousProvider);
+      ContentExtractor.hasAnalyzableAttachment = previousHasAnalyzable;
+      PDFExtractor.getAllPdfAttachments = previousAttachments;
+      PDFExtractor.extractTextFromItem = previousExtractText;
+      AiNoteService.findNoteRecord = previousFindNoteRecord;
+      AiNoteService.saveGeneratedNote = previousSaveGeneratedNote;
+      TaskArtifacts.probeCandidate = previousProbeCandidate;
+      TaskArtifacts.probe = previousProbe;
+      LLMService.setCodexTaskLedger(null);
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
   it("fails closed when the current attachment bytes mismatch the expected hash", async function () {
     const globalValue = globalThis as any;
     const previousZotero = globalValue.Zotero;
@@ -1305,6 +1548,152 @@ describe("Codex task queue gate", function () {
       LLMService.setCodexTaskLedger(null);
       PDFExtractor.getAllPdfAttachments = previousAttachments;
       globalValue.IOUtils = previousIo;
+      globalValue.Zotero = previousZotero;
+      globalValue.addon = previousAddon;
+      globalValue.ztoolkit = previousToolkit;
+    }
+  });
+
+  it("persists Codex decisions without retrying and exposes them in queue error copy", function () {
+    const globalValue = globalThis as any;
+    const previousAddon = globalValue.addon;
+    const previousZotero = globalValue.Zotero;
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.Zotero = {
+      version: "test",
+      getMainWindow: () => ({ navigator: {} }),
+    };
+    try {
+      const view = Object.create(TaskQueueView.prototype) as any;
+      const task = {
+        id: "blocked-task",
+        itemId: 1,
+        title: "Blocked paper",
+        status: TaskStatus.FAILED,
+        progress: 40,
+        createdAt: new Date("2026-08-28T00:00:00Z"),
+        retryCount: 0,
+        maxRetries: 2,
+        codexDecision: "BLOCKED",
+        failureCode: "codex-source-sha256-mismatch",
+        error: "hash mismatch",
+      };
+      const label = view.getCodexDecisionLabel(task);
+      const copy = view.buildTaskErrorCopyText(task);
+      const manager = Object.create(TaskQueueManager.prototype) as any;
+      const managerCopy = manager.buildTaskErrorDetails(
+        task,
+        new Error("failed"),
+      );
+      expect(label).to.contain("task-queue-codex-decision-blocked");
+      expect(copy).to.contain("codexDecision: BLOCKED");
+      expect(copy).to.contain("failureCode: codex-source-sha256-mismatch");
+      expect(managerCopy).to.contain("codexDecision: BLOCKED");
+      expect(managerCopy).to.contain(
+        "failureCode: codex-source-sha256-mismatch",
+      );
+      expect(task.retryCount).to.equal(0);
+    } finally {
+      globalValue.addon = previousAddon;
+      globalValue.Zotero = previousZotero;
+    }
+  });
+
+  it("round-trips PARTIAL/BLOCKED Codex decisions and hash errors through queue storage", async function () {
+    const globalValue = globalThis as any;
+    const previousZotero = globalValue.Zotero;
+    const previousAddon = globalValue.addon;
+    const previousToolkit = globalValue.ztoolkit;
+    const stored = new Map<string, string>();
+    globalValue.Zotero = {
+      Prefs: {
+        get: (key: string) => stored.get(key),
+        set: (key: string, value: string) => stored.set(key, value),
+        clear: (key: string) => stored.delete(key),
+      },
+    };
+    globalValue.addon = {
+      data: {
+        locale: {
+          current: {
+            formatMessagesSync: (requests: Array<{ id: string }>) =>
+              requests.map(({ id }) => ({ value: id, attributes: [] })),
+          },
+        },
+      },
+    };
+    globalValue.ztoolkit = { log: () => undefined };
+    const partialTask = {
+      id: "partial-task",
+      itemId: 1,
+      title: "Partial paper",
+      status: TaskStatus.FAILED,
+      progress: 50,
+      createdAt: new Date("2026-08-28T00:00:00Z"),
+      retryCount: 0,
+      maxRetries: 2,
+      codexDecision: "PARTIAL",
+      failureCode: "codex-sol-acceptance-partial",
+    };
+    const blockedTask = {
+      id: "blocked-task",
+      itemId: 2,
+      title: "Hash paper",
+      status: TaskStatus.FAILED,
+      progress: 5,
+      createdAt: new Date("2026-08-28T00:00:00Z"),
+      retryCount: 0,
+      maxRetries: 2,
+      codexDecision: "BLOCKED",
+      failureCode: "codex-source-sha256-mismatch",
+    };
+    const manager = Object.create(TaskQueueManager.prototype) as any;
+    manager.tasks = new Map([
+      [partialTask.id, partialTask],
+      [blockedTask.id, blockedTask],
+    ]);
+    manager.deletedFixedTasks = new Map();
+    manager.clearedDeletedFixedTaskKeys = new Set();
+    try {
+      expect(
+        manager.shouldSuppressTaskRetry(
+          new Error("ordinary failure"),
+          partialTask,
+        ),
+      ).to.equal(true);
+      expect(
+        manager.shouldSuppressTaskRetry(
+          new Error("ordinary failure"),
+          blockedTask,
+        ),
+      ).to.equal(true);
+      await manager.saveToStorage();
+      const restored = Object.create(TaskQueueManager.prototype) as any;
+      restored.tasks = new Map();
+      restored.deletedFixedTasks = new Map();
+      restored.clearedDeletedFixedTaskKeys = new Set();
+      restored.lastLoadedSnapshotAt = null;
+      restored.loadFromStorage(false);
+      expect(restored.tasks.get(partialTask.id)).to.include({
+        codexDecision: "PARTIAL",
+        failureCode: "codex-sol-acceptance-partial",
+        retryCount: 0,
+      });
+      expect(restored.tasks.get(blockedTask.id)).to.include({
+        codexDecision: "BLOCKED",
+        failureCode: "codex-source-sha256-mismatch",
+        retryCount: 0,
+      });
+    } finally {
       globalValue.Zotero = previousZotero;
       globalValue.addon = previousAddon;
       globalValue.ztoolkit = previousToolkit;

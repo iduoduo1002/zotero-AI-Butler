@@ -562,6 +562,17 @@ export class TaskQueueView extends BaseView {
     return getString("task-queue-status-failed");
   }
 
+  private getCodexDecisionLabel(task: TaskItem): string | undefined {
+    if (!task.codexDecision) return undefined;
+    if (task.codexDecision === "PASS") {
+      return getString("task-queue-codex-decision-pass");
+    }
+    if (task.codexDecision === "PARTIAL") {
+      return getString("task-queue-codex-decision-partial");
+    }
+    return getString("task-queue-codex-decision-blocked");
+  }
+
   private getTaskStageColor(task: TaskItem): string {
     if (task.status === TaskStatus.FAILED) return "#f44336";
     if (task.status === TaskStatus.COMPLETED) return "#4caf50";
@@ -596,6 +607,12 @@ export class TaskQueueView extends BaseView {
         : undefined,
       task.error
         ? getString("task-queue-tooltip-error", { args: { error: task.error } })
+        : undefined,
+      this.getCodexDecisionLabel(task)
+        ? `${getString("task-queue-codex-decision-label")}: ${this.getCodexDecisionLabel(task)}`
+        : undefined,
+      task.failureCode
+        ? `${getString("task-queue-failure-code-label")}: ${task.failureCode}`
         : undefined,
     ];
     return lines.filter(Boolean).join("\n");
@@ -881,6 +898,13 @@ export class TaskQueueView extends BaseView {
     taskHeader.appendChild(taskStatus);
 
     const safeError = task.error ? this.escapeHtml(task.error) : "";
+    const codexDecisionLabel = this.getCodexDecisionLabel(task);
+    const safeCodexDecision = codexDecisionLabel
+      ? this.escapeHtml(codexDecisionLabel)
+      : "";
+    const safeFailureCode = task.failureCode
+      ? this.escapeHtml(task.failureCode)
+      : "";
     const displayWorkflowStage =
       task.status === TaskStatus.COMPLETED
         ? getString("task-queue-status-completed")
@@ -911,6 +935,8 @@ export class TaskQueueView extends BaseView {
         ${getString("task-queue-created-at")}: ${task.createdAt.toLocaleString()}
         ${task.completedAt ? `<br/>${getString("task-queue-completed-at")}: ${task.completedAt.toLocaleString()}` : ""}
         ${safeError ? `<br/><span style="color: #f44336;">${getString("task-queue-error-label")}: ${safeError}</span>` : ""}
+        ${safeCodexDecision ? `<br/><span>${getString("task-queue-codex-decision-label")}: ${safeCodexDecision}</span>` : ""}
+        ${safeFailureCode ? `<br/><span>${getString("task-queue-failure-code-label")}: <code>${safeFailureCode}</code></span>` : ""}
         ${task.retryCount > 0 ? `<br/>${getString("task-queue-retry-count")}: ${task.retryCount}` : ""}
         ${safeWorkflowStage ? `<br/><strong style="color: ${this.getTaskStageColor(task)};">${getString("task-queue-stage-label")}: ${safeWorkflowStage}</strong>` : ""}
         ${safeStageDetail ? `<br/><span title="${safeStageDetail}">${getString("task-queue-detail-label")}: ${safeStageDetail}</span>` : ""}
@@ -1254,6 +1280,8 @@ export class TaskQueueView extends BaseView {
       `maxRetries: ${task.maxRetries}`,
       `workflowStage: ${task.workflowStage || noneValue}`,
       `errorMessage: ${task.error || unknownValue}`,
+      `codexDecision: ${task.codexDecision || noneValue}`,
+      `failureCode: ${task.failureCode || noneValue}`,
     ].join("\n");
   }
 
@@ -1649,6 +1677,9 @@ export class TaskQueueView extends BaseView {
       (taskId, success, error) => {
         const t = this.tasks.find((t) => t.id === taskId);
         if (t) {
+          const currentTask = this.manager?.getTask(taskId);
+          t.codexDecision = currentTask?.codexDecision;
+          t.failureCode = currentTask?.failureCode;
           t.status = success ? TaskStatus.COMPLETED : TaskStatus.FAILED;
           t.error = success ? undefined : error || t.error;
           t.completedAt = new Date();
