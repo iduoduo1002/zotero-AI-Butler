@@ -333,6 +333,20 @@ function injectCodexContractIntoConversation(
   ];
 }
 
+function assertCodexInputAllowed(
+  endpoint: LLMEndpoint,
+  content: LLMContentInput,
+): void {
+  if (endpoint.providerType !== "codex-app-server") return;
+  if (
+    (content.kind === "legacy" &&
+      (content.isBase64 || content.policy === "pdf-base64")) ||
+    content.policy === "pdf-base64"
+  ) {
+    throw new Error(getString("endpoint-pdf-unsupported"));
+  }
+}
+
 function policyLabel(value: unknown): string {
   if (typeof value === "string" && value.trim()) return value.trim();
   if (value && typeof value === "object") return "configured";
@@ -1207,6 +1221,7 @@ export class LLMService {
     prompt: string,
     attempt = 0,
   ): Promise<LLMResponse> {
+    assertCodexInputAllowed(endpoint, request.content);
     const { options, context } = this.buildAttemptOptions(
       endpoint,
       request.generation,
@@ -1482,6 +1497,7 @@ export class LLMService {
     request: LLMChatRequest,
     attempt = 0,
   ): Promise<LLMResponse> {
+    assertCodexInputAllowed(endpoint, request.content);
     const { options, context } = this.buildAttemptOptions(
       endpoint,
       request.generation,

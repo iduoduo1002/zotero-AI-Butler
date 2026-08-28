@@ -794,6 +794,14 @@ describe("Codex task queue gate", function () {
     };
     globalValue.ztoolkit = { log: () => undefined };
     const originalProvider = ProviderRegistry.get("codex-app-server");
+    const originalLedgerGetter = LLMService.getCodexTaskLedger;
+    let ledgerInitCount = 0;
+    LLMService.getCodexTaskLedger = (() => {
+      ledgerInitCount += 1;
+      throw new Error(
+        "ledger initialization must not precede input validation",
+      );
+    }) as any;
     let providerCallCount = 0;
     ProviderRegistry.register({
       id: "codex-app-server",
@@ -833,8 +841,10 @@ describe("Codex task queue gate", function () {
       }
       expect(thrown?.message).to.match(/endpoint-pdf-unsupported|unsupported/i);
       expect(providerCallCount).to.equal(0);
+      expect(ledgerInitCount).to.equal(0);
     } finally {
       if (originalProvider) ProviderRegistry.register(originalProvider);
+      LLMService.getCodexTaskLedger = originalLedgerGetter;
       globalValue.Zotero = previousZotero;
       globalValue.addon = previousAddon;
       globalValue.ztoolkit = previousToolkit;

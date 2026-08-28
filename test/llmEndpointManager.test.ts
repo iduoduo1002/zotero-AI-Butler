@@ -211,6 +211,19 @@ describe("LLMEndpointManager", function () {
     });
   });
 
+  it("honors an explicit legacy Codex reasoning override for the Luna role", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+    Zotero.Prefs.set(prefName("codexModel"), "", true);
+    Zotero.Prefs.set(prefName("codexReasoningEffort"), "low", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.codexRole).to.equal("luna");
+    expect(endpoint.reasoningEffort).to.equal("low");
+  });
+
   it("maps Codex endpoint fields into LLMOptions without dropping Luna max effort", function () {
     const endpoint = LLMEndpointManager.createEndpoint(
       "codex-app-server",

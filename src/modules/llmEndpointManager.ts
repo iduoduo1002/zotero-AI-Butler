@@ -1,5 +1,6 @@
 import { getString } from "../utils/locale";
 import { getPref, setPref } from "../utils/prefs";
+import { config } from "../../package.json";
 import type { ProviderId } from "./apiKeyManager";
 import { normalizeReasoningEffortSetting } from "./llmproviders/shared/reasoning";
 import type { LLMReasoningEffortSetting } from "./llmproviders/types";
@@ -125,6 +126,29 @@ const CODEX_ROLE_DEFAULTS: Record<
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function getUserPreference(key: string): unknown {
+  const fullKey = `${config.prefsPrefix}.${key}`;
+  const zoteroPrefs = (globalThis as any).Zotero?.Prefs;
+  const zoteroRootBranch = zoteroPrefs?.rootBranch;
+  const servicesPrefs = (globalThis as any).Services?.prefs;
+  const checkerOwner =
+    typeof zoteroRootBranch?.prefHasUserValue === "function"
+      ? zoteroRootBranch
+      : typeof zoteroPrefs?.prefHasUserValue === "function"
+        ? zoteroPrefs
+        : typeof servicesPrefs?.prefHasUserValue === "function"
+          ? servicesPrefs
+          : undefined;
+  if (checkerOwner) {
+    try {
+      if (!checkerOwner.prefHasUserValue(fullKey)) return undefined;
+    } catch {
+      // Fall through to the compatibility read below.
+    }
+  }
+  return getPref(key as any);
 }
 
 function makeEndpointId(): string {
@@ -753,9 +777,10 @@ export class LLMEndpointManager {
     const defaults = this.providerDefaults(providerType);
     if (providerType === "codex-app-server") {
       const role = normalizeCodexRole(codexRole);
+      const configuredCodexEffort = getUserPreference("codexReasoningEffort");
+      const configuredGeneralEffort = getUserPreference("reasoningEffort");
       return normalizeCodexReasoningEffort(
-        getPref("codexReasoningEffort" as any) ||
-          getPref("reasoningEffort" as any),
+        configuredCodexEffort ?? configuredGeneralEffort,
         CODEX_ROLE_DEFAULTS[role].reasoningEffort,
       );
     }
