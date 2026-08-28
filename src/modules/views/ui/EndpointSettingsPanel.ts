@@ -81,7 +81,12 @@ function localizedPdfProcessModeLabel(mode: string): string {
   return t("endpoint-pdf-base64-short");
 }
 
-function pdfProcessModeOptions(): Array<{ value: string; label: string }> {
+function pdfProcessModeOptions(
+  endpoint?: LLMEndpoint,
+): Array<{ value: string; label: string }> {
+  if (endpoint?.providerType === "codex-app-server") {
+    return [{ value: "text", label: t("endpoint-pdf-text") }];
+  }
   const globalLabel = localizedPdfProcessModeLabel(
     LLMEndpointManager.getGlobalPdfProcessMode(),
   );
@@ -1172,9 +1177,10 @@ export class EndpointSettingsPanel {
 
   private renderPdfProcessModeField(endpoint: LLMEndpoint): HTMLElement {
     const document = doc();
-    const value = LLMEndpointManager.normalizePdfProcessMode(
-      endpoint.pdfProcessMode,
-    );
+    const isCodex = endpoint.providerType === "codex-app-server";
+    const value = isCodex
+      ? "text"
+      : LLMEndpointManager.normalizePdfProcessMode(endpoint.pdfProcessMode);
     endpoint.pdfProcessMode = value;
 
     const wrapper = document.createElement("div");
@@ -1186,11 +1192,12 @@ export class EndpointSettingsPanel {
 
     const select = createSelect(
       `endpoint-${endpoint.id}-pdfProcessMode`,
-      pdfProcessModeOptions(),
+      pdfProcessModeOptions(endpoint),
       value,
       (newValue) => {
-        endpoint.pdfProcessMode =
-          LLMEndpointManager.normalizePdfProcessMode(newValue);
+        endpoint.pdfProcessMode = isCodex
+          ? "text"
+          : LLMEndpointManager.normalizePdfProcessMode(newValue);
         this.persist();
         this.render();
       },
@@ -1350,7 +1357,11 @@ export class EndpointSettingsPanel {
     return createFormGroup(
       t("endpoint-connection-test"),
       wrapper,
-      fieldDescription(t("endpoint-test-help")),
+      fieldDescription(
+        endpoint.providerType === "codex-app-server"
+          ? t("endpoint-codex-test-help")
+          : t("endpoint-test-help"),
+      ),
     );
   }
 
@@ -1616,9 +1627,10 @@ export class EndpointSettingsPanel {
   }
 
   private describeEndpointPdfMode(endpoint: LLMEndpoint): string {
-    const configured = LLMEndpointManager.normalizePdfProcessMode(
-      endpoint.pdfProcessMode,
-    );
+    const configured =
+      endpoint.providerType === "codex-app-server"
+        ? "text"
+        : LLMEndpointManager.normalizePdfProcessMode(endpoint.pdfProcessMode);
     const effective = LLMEndpointManager.getEffectivePdfProcessMode(endpoint);
     const effectiveLabel = localizedPdfProcessModeLabel(effective);
     return configured === "global"

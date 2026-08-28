@@ -219,14 +219,9 @@ function normalizeCodexSandboxPolicy(
   return CODEX_DEFAULT_SANDBOX_POLICY;
 }
 
-function normalizeCodexPdfProcessMode(raw: unknown): LLMEndpointPdfProcessMode {
-  const value = String(raw || "")
-    .trim()
-    .toLowerCase();
-  if (value === "global") return "global";
-  if (value === "base64" || value === "text" || value === "mineru") {
-    return value;
-  }
+function normalizeCodexPdfProcessMode(
+  _raw: unknown,
+): LLMEndpointPdfProcessMode {
   return "text";
 }
 
@@ -364,8 +359,12 @@ export class LLMEndpointManager {
   }
 
   static getEffectivePdfProcessMode(
-    endpoint?: Pick<LLMEndpoint, "pdfProcessMode"> | null,
+    endpoint?:
+      | (Pick<LLMEndpoint, "pdfProcessMode"> &
+          Partial<Pick<LLMEndpoint, "providerType">>)
+      | null,
   ): LLMPdfProcessMode {
+    if (endpoint?.providerType === "codex-app-server") return "text";
     const endpointMode = normalizeEndpointPdfProcessMode(
       endpoint?.pdfProcessMode,
     );

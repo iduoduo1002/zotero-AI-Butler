@@ -252,6 +252,7 @@ export class LLMService {
 
   static mapToKeyManagerId(providerId: string): ProviderId {
     const id = providerId.toLowerCase();
+    if (id === "codex-app-server") return "codex-app-server";
     if (id.includes("gemini") || id === "google") return "google";
     if (id.includes("anthropic") || id.includes("claude")) return "anthropic";
     if (id === "openai-compat") return "openai-compat";
@@ -351,13 +352,16 @@ export class LLMService {
         generation?.maxOutputTokens ??
         (parseInt((getPref("maxTokens") as string) || "81920", 10) || 81920);
     }
+    const isCodexEndpoint = endpoint?.providerType === "codex-app-server";
     const reasoningEffort = resolveReasoningEffort(
       normalizeReasoningEffortSetting(
         generation?.reasoningEffort ??
           endpoint?.reasoningEffort ??
           getPref("reasoningEffort" as any),
         "default",
+        { allowMax: isCodexEndpoint },
       ),
+      { allowMax: isCodexEndpoint },
     );
     if (reasoningEffort) {
       common.reasoningEffort = reasoningEffort;
@@ -370,6 +374,14 @@ export class LLMService {
       common.apiUrl = endpoint.apiUrl.trim();
       common.apiKey = endpoint.apiKey.trim();
       common.model = endpoint.model.trim();
+      if (endpoint.providerType === "codex-app-server") {
+        common.role = endpoint.codexRole;
+        common.codexBinaryPath = endpoint.codexBinaryPath;
+        common.approvalPolicy = endpoint.approvalPolicy;
+        common.sandboxPolicy = endpoint.sandboxPolicy;
+        common.networkAccess = endpoint.networkAccess;
+        common.mcpEnabled = endpoint.mcpEnabled;
+      }
     } else if (id.includes("gemini") || id === "google") {
       const keyManagerId = this.mapToKeyManagerId(id);
       common.apiUrl = (
@@ -1712,17 +1724,20 @@ export class LLMService {
     provider: ILlmProvider,
     endpoint?: LLMEndpoint,
   ): LLMOptions {
+    const extra: Partial<LLMOptions> = {
+      maxTokens: 16,
+      vendorOptions: {
+        connectionTestMode: this.getConnectionTestMode(provider, endpoint),
+      },
+    };
+    if (endpoint?.providerType !== "codex-app-server") {
+      extra.reasoningEffort = undefined;
+    }
     return this.buildOptions(
       endpoint || providerId,
       undefined,
       { stream: false },
-      {
-        maxTokens: 16,
-        reasoningEffort: undefined,
-        vendorOptions: {
-          connectionTestMode: this.getConnectionTestMode(provider, endpoint),
-        },
-      },
+      extra,
     );
   }
 

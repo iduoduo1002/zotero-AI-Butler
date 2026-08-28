@@ -4,6 +4,12 @@ import {
   LLMEndpointManager,
   type LLMEndpoint,
 } from "../src/modules/llmEndpointManager";
+import LLMService from "../src/modules/llmService";
+import { ProviderRegistry } from "../src/modules/llmproviders/ProviderRegistry";
+import {
+  normalizeReasoningEffortSetting,
+  resolveReasoningEffort,
+} from "../src/modules/llmproviders/shared/reasoning";
 
 const prefKeys = [
   "llmEndpoints",
@@ -203,6 +209,99 @@ describe("LLMEndpointManager", function () {
       mcpEnabled: true,
       pdfProcessMode: "text",
     });
+  });
+
+  it("maps Codex endpoint fields into LLMOptions without dropping Luna max effort", function () {
+    const endpoint = LLMEndpointManager.createEndpoint(
+      "codex-app-server",
+      "luna",
+    );
+    endpoint.codexBinaryPath = "/usr/local/bin/codex";
+    endpoint.approvalPolicy = "never";
+    endpoint.sandboxPolicy = "workspace-write";
+    endpoint.networkAccess = true;
+    endpoint.mcpEnabled = false;
+
+    const options = LLMService.buildOptions(endpoint, undefined, {
+      stream: false,
+    });
+
+    expect(options).to.include({
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "max",
+      role: "luna",
+      codexBinaryPath: "/usr/local/bin/codex",
+      approvalPolicy: "never",
+      sandboxPolicy: "workspace-write",
+      networkAccess: true,
+      mcpEnabled: false,
+    });
+  });
+
+  it("keeps Codex outside legacy API-key provider rotation", function () {
+    expect(LLMService.mapToKeyManagerId("codex-app-server")).to.equal(
+      "codex-app-server",
+    );
+  });
+
+  it("passes MCP enabled through the connection path for runtime fail-closed handling", async function () {
+    const endpoint = LLMEndpointManager.createEndpoint(
+      "codex-app-server",
+      "luna",
+    );
+    endpoint.mcpEnabled = true;
+    const provider = ProviderRegistry.get("codex-app-server");
+    expect(provider).to.not.equal(undefined);
+    const originalTestConnection = provider!.testConnection;
+    let capturedOptions: Record<string, unknown> | undefined;
+    provider!.testConnection = async (options) => {
+      capturedOptions = options as unknown as Record<string, unknown>;
+      throw new Error("codex-mcp-reserved");
+    };
+
+    let error: unknown;
+    try {
+      await LLMService.testEndpointConnection(endpoint);
+    } catch (caught) {
+      error = caught;
+    } finally {
+      provider!.testConnection = originalTestConnection;
+    }
+
+    expect((error as Error)?.message).to.equal("codex-mcp-reserved");
+    expect(capturedOptions).to.include({
+      role: "luna",
+      reasoningEffort: "max",
+      mcpEnabled: true,
+    });
+  });
+
+  it("gates max reasoning to Codex while preserving legacy normalizer defaults", function () {
+    expect(normalizeReasoningEffortSetting("max")).to.equal("default");
+    expect(
+      normalizeReasoningEffortSetting("max", "default", { allowMax: true }),
+    ).to.equal("max");
+    expect(resolveReasoningEffort("max", { allowMax: true })).to.equal("max");
+  });
+
+  it("forces persisted Codex PDF modes to extracted text", function () {
+    for (const mode of ["base64", "global", "mineru", undefined]) {
+      LLMEndpointManager.saveEndpoints([
+        {
+          ...LLMEndpointManager.createEndpoint("codex-app-server"),
+          pdfProcessMode: mode as any,
+        },
+      ]);
+
+      const [endpoint] = LLMEndpointManager.getEndpoints();
+      expect(endpoint.pdfProcessMode, mode).to.equal("text");
+      expect(
+        LLMEndpointManager.getEffectivePdfProcessMode(endpoint),
+        mode,
+      ).to.equal("text");
+    }
   });
 
   it("migrates an empty endpoint list from legacy provider prefs", function () {
