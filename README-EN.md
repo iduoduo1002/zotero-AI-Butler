@@ -141,6 +141,17 @@ AI Butler supports multiple mainstream LLM platforms:
 
 ![Multi-platform API settings](./assets/images/多平台API配置.png)
 
+### Local Codex App Server (Optional)
+
+AI Butler can also call `codex app-server` on the same Mac through the user's local Codex login. No API URL or API key is entered in Zotero. Run `codex login` in a terminal, then add **Codex App Server (local login)** under **Quick Settings -> Model Platforms**.
+
+- **Role defaults**: Sol uses `gpt-5.6-sol` + `high` for planning and acceptance; Luna uses `gpt-5.6-luna` + `max` for bounded sub-tasks.
+- **Binary path**: Leave the field blank to let Zotero's process API discover `codex`; if discovery fails, enter the executable's absolute path. Do not rely only on the terminal shell's `PATH`.
+- **Input boundary**: Codex v1 accepts text/Markdown only. The Codex endpoint is fixed to text processing and rejects Base64 PDF input. If MinerU is required, a supported caller must explicitly produce Markdown; it is not uploaded as a PDF file.
+- **Safe defaults**: approval is `on-request`, the sandbox is `read-only`, and network access is off. The v1 MCP channel is reserved and forced off; a manually stored `mcpEnabled: true` fails closed.
+
+A local Codex App Server process does not imply a local model: extracted text sent in a Codex turn may still leave the machine according to the Codex account and model service policy. Read the [Codex setup and data-boundary guide](docs/codex-app-server.md); repository documentation does not treat a local connection test or test suite as evidence that a real Zotero/Codex demo passed.
+
 ### 6. Prompt Preset Management
 
 AI Butler provides powerful prompt management:
