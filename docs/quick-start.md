@@ -66,7 +66,7 @@ codex login status
 1. 打开 **AI 管家仪表盘 → 快捷设置 → 模型平台**。
 2. 添加 **Codex App Server（本机登录）**。
 3. **Codex 二进制路径**可以留空，让 Zotero 的进程接口自动查找 `codex`；如果自动查找失败，填写 Codex 可执行文件的绝对路径。Zotero 启动的进程不会继承您终端中所有的 shell `PATH`，因此绝对路径是可靠的回退方案。
-4. 选择角色并确认模型与推理强度：Sol 为 `gpt-5.6-sol` + `high`，Luna 为 `gpt-5.6-luna` + `max`。除非您明确知道账号和模型服务支持其他组合，否则保留角色默认值。
+4. 选择角色并确认模型与推理强度：Sol 为 `gpt-5.6-sol` + `high`，Luna 设置页默认为 `gpt-5.6-luna` + `max`；队列执行长文时会自动限制 Luna 为 `high`，避免回合超时。除非您明确知道账号和模型服务支持其他组合，否则保留角色默认值。
 5. 默认保持审批 `on-request`、沙箱 `read-only`、网络访问关闭。
 6. 点击 **测试连接**。此按钮会尝试一次 Codex App Server `initialize` 和最小 `Say OK` 回合；看到成功提示只说明本次连接测试成功，不等于已完成真实 Zotero 文献任务。
 

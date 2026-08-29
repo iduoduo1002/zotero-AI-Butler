@@ -153,7 +153,7 @@ AI管家支持多种主流大模型平台，满足不同用户的需求：
 
 AI 管家也可以调用同一台 Mac 上、使用您本机登录状态运行的 `codex app-server`，不需要在 Zotero 中填写 API 地址或 API 密钥。先在终端执行 `codex login`，再在 **快捷设置 → 模型平台** 添加 **Codex App Server（本机登录）**。
 
-- **角色默认值**：Sol 使用 `gpt-5.6-sol` + `high` 负责规划与验收；Luna 使用 `gpt-5.6-luna` + `max` 执行受约束的子任务。
+- **角色默认值**：Sol 使用 `gpt-5.6-sol` + `high` 负责规划与验收；Luna 使用 `gpt-5.6-luna` 执行受约束的子任务。为避免长文在 `max` 推理下超过回合超时，队列执行会将 Luna 回合限制为 `high`；Sol 仍保持 `high`。
 - **二进制路径**：路径留空时由 Zotero 的进程接口自动查找；若查找失败，请填写 Codex 可执行文件的绝对路径。不要只依赖终端 shell 的 `PATH`。
 - **输入边界**：Codex 首版只接收文本/Markdown。Codex endpoint 的 PDF 模式固定为文本并拒绝 Base64；需要 MinerU 时必须由支持该策略的调用方显式生成 Markdown，不能把它当作 PDF 文件上传。
 - **安全默认值**：审批为 `on-request`、沙箱为 `read-only`、网络访问关闭；首版 MCP 通道保留并强制关闭，手工写入 `mcpEnabled: true` 会 fail-closed。

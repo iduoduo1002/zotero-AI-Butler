@@ -2737,7 +2737,7 @@ export class TaskQueueManager {
       {
         role: "luna",
         model: "gpt-5.6-luna",
-        reasoningEffort: "max",
+        reasoningEffort: "high",
         parentExecutionId: sol.executionId,
         itemKey,
         attachmentKey,
@@ -3165,6 +3165,10 @@ export class TaskQueueManager {
         noteOptions.retry = false;
         noteOptions.metadata = {
           role: "luna",
+          // Long paper prompts can make Luna/max spend the full five-minute
+          // turn deadline without reaching turn/completed. Keep the worker
+          // bounded at high effort while Sol retains high-effort control.
+          reasoningEffort: "high",
           parentExecutionId: codexExecution.lunaExecutionId,
           itemKey: codexExecution.itemKey,
           attachmentKey: codexExecution.attachmentKey,
