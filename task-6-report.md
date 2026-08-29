@@ -25,6 +25,9 @@ The macOS environment override now sets `environmentAppend: true`, so Zotero
 retains inherited variables such as `HOME` and `CODEX_HOME`. A non-macOS
 regression test confirms no environment override is sent.
 
+The fallback implementation was lint-cleaned without changing PATH behavior.
+`npm run lint:check`, `npx tsc --noEmit`, and `npm run build` all pass.
+
 ## Remaining limitation
 
 The full Zotero-backed focused test cannot run until a Zotero binary is

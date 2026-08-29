@@ -139,20 +139,20 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
       platform === "Mac68K";
     if (!isMacOS) return undefined;
 
-    let inheritedPath = "";
+    let inheritedPath: string | undefined;
     try {
       inheritedPath = String(services?.env?.get?.("PATH") || "");
     } catch {
-      inheritedPath = "";
+      // Fall back to the host process environment below.
     }
     if (!inheritedPath) {
       try {
         inheritedPath = String((globalThis as any).process?.env?.PATH || "");
       } catch {
-        inheritedPath = "";
+        // An absent host PATH is safe; the allowlisted directories remain.
       }
     }
-    const pathEntries = inheritedPath.split(":").filter(Boolean);
+    const pathEntries = (inheritedPath || "").split(":").filter(Boolean);
     const path = [...MACOS_NODE_PATHS, ...pathEntries].filter(
       (entry, index, entries) => entries.indexOf(entry) === index,
     );
