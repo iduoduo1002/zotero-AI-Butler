@@ -583,10 +583,12 @@ describe("Codex app-server provider", function () {
     let callOptions: Record<string, unknown> | undefined;
     const originalChromeUtils = (globalThis as any).ChromeUtils;
     const originalNavigator = (globalThis as any).navigator;
+    const originalServices = (globalThis as any).Services;
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
       value: { platform: "Linux x86_64" },
     });
+    (globalThis as any).Services = { appinfo: { OS: "Linux" } };
     (globalThis as any).ChromeUtils = {
       importESModule: () => ({
         Subprocess: {
@@ -605,6 +607,8 @@ describe("Codex app-server provider", function () {
       process.kill();
     } finally {
       (globalThis as any).ChromeUtils = originalChromeUtils;
+      (globalThis as any).Services = originalServices;
+      (globalThis as any).Services = originalServices;
       Object.defineProperty(globalThis, "navigator", {
         configurable: true,
         value: originalNavigator,
