@@ -225,6 +225,28 @@ describe("LLMEndpointManager", function () {
     expect(LLMEndpointManager.validateEndpoint(claude)).to.deep.equal([]);
   });
 
+  it("allows Claude CLI PATH discovery when binary path is blank", function () {
+    const pathDiscovered = {
+      ...LLMEndpointManager.createEndpoint("claude-code-cli" as any),
+      providerType: "claude-code-cli",
+      apiUrl: "",
+      apiKey: "",
+      model: "sonnet",
+      claudeBinaryPath: "",
+    } as any;
+    const explicitPath = {
+      ...pathDiscovered,
+      claudeBinaryPath: "/usr/local/bin/claude",
+    };
+
+    expect(LLMEndpointManager.isEndpointUsable(pathDiscovered)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(pathDiscovered)).to.deep.equal(
+      [],
+    );
+    expect(LLMEndpointManager.isEndpointUsable(explicitPath)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(explicitPath)).to.deep.equal([]);
+  });
+
   it("normalizes a Codex Luna endpoint to the Luna defaults", function () {
     LLMEndpointManager.saveEndpoints([
       {

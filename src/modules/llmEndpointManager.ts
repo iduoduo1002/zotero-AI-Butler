@@ -484,10 +484,9 @@ export class LLMEndpointManager {
       return endpoint.model.trim().length > 0;
     }
     if (normalizedProvider === "claude-code-cli") {
-      return (
-        endpoint.model.trim().length > 0 &&
-        Boolean(endpoint.claudeBinaryPath?.trim())
-      );
+      // An empty path is valid: ClaudeCodeCliProcess performs controlled PATH
+      // discovery at spawn time. An explicit absolute path remains supported.
+      return endpoint.model.trim().length > 0;
     }
     return (
       endpoint.apiUrl.trim().length > 0 &&
@@ -772,9 +771,6 @@ export class LLMEndpointManager {
     const isClaude = normalizedProvider === "claude-code-cli";
     if (!isCodex && !isClaude && !endpoint.apiUrl.trim()) {
       missing.push("apiUrl");
-    }
-    if (isClaude && !endpoint.claudeBinaryPath?.trim()) {
-      missing.push("claudeBinaryPath");
     }
     if (
       !isCodex &&
