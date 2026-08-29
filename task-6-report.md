@@ -17,7 +17,8 @@ both macOS directories and preserves `/gui/bin`.
 
 - `npx tsc --noEmit`: passed.
 - `git diff --check`: passed.
-- `npm test`: blocked before tests by the local harness reporting `No Zotero Found`.
+- Bare `npm test`: the local harness reports `No Zotero Found` when no Zotero
+  executable is configured.
 
 ## Follow-up safety fix
 
@@ -30,10 +31,18 @@ The fallback implementation was lint-cleaned without changing PATH behavior.
 
 The bare-command test now asserts command, arguments, and stderr separately,
 so the expected launch contract remains strict while allowing macOS PATH
-environment fields. Full `npm test` remains blocked before test execution by
-the local harness error `No Zotero Found`.
+environment fields. Without an explicit Zotero executable path, the harness
+still reports `No Zotero Found` before running tests.
+
+With the local Zotero executable configured, the complete harness run passed
+357 tests:
+
+```bash
+ZOTERO_PLUGIN_ZOTERO_BIN_PATH=/Applications/Zotero.app/Contents/MacOS/zotero \
+ZOTERO_PLUGIN_KILL_COMMAND=true npm test -- --abort-on-fail
+```
 
 ## Remaining limitation
 
-The full Zotero-backed focused test cannot run until a Zotero binary is
-configured for the test harness.
+No live vendor credential smoke was run. A production GUI connection test
+still needs to be run after installing the beta4 XPI.
