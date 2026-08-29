@@ -1320,12 +1320,17 @@ describe("Codex task queue gate", function () {
       expect(gateCalled).to.equal(true);
       expect(lunaOptions.metadata).to.include({
         role: "luna",
+        reasoningEffort: "high",
         itemKey: "ITEM-QUEUE",
       });
       expect(lunaOptions.metadata.codexContract).to.include({
         taskType: "summary",
       });
       expect(turns).to.deep.equal(["sol", "sol"]);
+      const lunaRecord = (await ledger.readAll()).find(
+        (record) => record.role === "luna",
+      );
+      expect(lunaRecord?.reasoningEffort).to.equal("high");
       expect(
         (await ledger.findLatest({ itemKey: "ITEM-QUEUE" }))?.status,
       ).to.equal("passed");
@@ -1407,6 +1412,7 @@ describe("Codex task queue gate", function () {
       fileSystem,
     });
     const roles: string[] = [];
+    const reasoningEfforts: string[] = [];
     const providerExecutionIds: string[] = [];
     const eventLog: string[] = [];
     let saveTxCount = 0;
@@ -1445,6 +1451,7 @@ describe("Codex task queue gate", function () {
       generateSummary: async (_content, isBase64, prompt, options) => {
         expect(isBase64).to.equal(false);
         roles.push(options.role || "unknown");
+        reasoningEfforts.push(String(options.reasoningEffort || ""));
         providerCall += 1;
         const text =
           providerCall === 1
@@ -1572,6 +1579,11 @@ describe("Codex task queue gate", function () {
       expect(task.status).to.equal(TaskStatus.COMPLETED);
       expect(task.codexDecision).to.equal("PASS");
       expect(roles.slice(0, 3)).to.deep.equal(["sol", "luna", "sol"]);
+      expect(reasoningEfforts.slice(0, 3)).to.deep.equal([
+        "high",
+        "high",
+        "high",
+      ]);
       expect(providerExecutionIds).to.have.length(3);
       expect(new Set(providerExecutionIds).size).to.equal(3);
       expect(saveTxCount).to.equal(1);
@@ -1618,6 +1630,7 @@ describe("Codex task queue gate", function () {
         "acceptance:done:BLOCKED",
       ]);
       expect(roles.slice(3)).to.deep.equal(["sol", "luna", "sol"]);
+      expect(reasoningEfforts.slice(3)).to.deep.equal(["high", "high", "high"]);
       const records = await ledger.readAll();
       const aggregateRecords = records.filter(
         (record) => record.itemKey === item.key,

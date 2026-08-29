@@ -41,7 +41,8 @@
 不能通过手工修改 endpoint JSON 绕过。
 
 Coding Plan profile 不改变任务队列的 Sol/Luna 语义：若任务使用 Codex App Server，
-仍由 `gpt-5.6-sol/high` 规划与独立验收，由 `gpt-5.6-luna/max` 执行有界子任务，最终
+仍由 `gpt-5.6-sol/high` 规划与独立验收，由 `gpt-5.6-luna/high` 执行有界子任务（队列为
+避免长文 `max` 推理超过回合上限而采用 high），最终
 写入笔记前必须通过 note-write gate。供应商 API Key 不进入日志、账本、笔记 metadata
 或 CLI 参数；笔记只追加可选 vendor/profile 标识。
 
