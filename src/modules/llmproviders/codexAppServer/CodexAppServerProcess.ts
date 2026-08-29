@@ -18,6 +18,7 @@ type SubprocessModule = {
     arguments: string[];
     stderr: "pipe";
     environment?: Record<string, string>;
+    environmentAppend?: boolean;
   }): unknown | Promise<unknown>;
   pathSearch?: (
     command: string,
@@ -120,7 +121,7 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
       // stable subcommand also works with older Codex CLI releases.
       arguments: ["app-server"],
       stderr: "pipe",
-      ...(environment ? { environment } : {}),
+      ...(environment ? { environment, environmentAppend: true } : {}),
     });
     if (!raw) {
       throw new Error(codexError("codex-subprocess-not-started"));

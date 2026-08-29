@@ -19,6 +19,12 @@ both macOS directories and preserves `/gui/bin`.
 - `git diff --check`: passed.
 - `npm test`: blocked before tests by the local harness reporting `No Zotero Found`.
 
+## Follow-up safety fix
+
+The macOS environment override now sets `environmentAppend: true`, so Zotero
+retains inherited variables such as `HOME` and `CODEX_HOME`. A non-macOS
+regression test confirms no environment override is sent.
+
 ## Remaining limitation
 
 The full Zotero-backed focused test cannot run until a Zotero binary is

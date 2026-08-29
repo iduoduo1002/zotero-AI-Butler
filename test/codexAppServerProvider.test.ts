@@ -565,6 +565,7 @@ describe("Codex app-server provider", function () {
     try {
       const process = await CodexAppServerProcess.spawn();
       const environment = callOptions?.environment as { PATH: string };
+      expect(callOptions?.environmentAppend).to.equal(true);
       expect(environment.PATH).to.equal(
         "/usr/local/bin:/opt/homebrew/bin:/gui/bin",
       );
@@ -572,6 +573,39 @@ describe("Codex app-server provider", function () {
     } finally {
       (globalThis as any).ChromeUtils = originalChromeUtils;
       (globalThis as any).Services = originalServices;
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: originalNavigator,
+      });
+    }
+  });
+
+  it("does not override the environment on non-macOS", async function () {
+    let callOptions: Record<string, unknown> | undefined;
+    const originalChromeUtils = (globalThis as any).ChromeUtils;
+    const originalNavigator = (globalThis as any).navigator;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { platform: "Linux x86_64" },
+    });
+    (globalThis as any).ChromeUtils = {
+      importESModule: () => ({
+        Subprocess: {
+          pathSearch: async () => "/usr/bin/codex",
+          call: async (options: Record<string, unknown>) => {
+            callOptions = options;
+            return { stdin: { write: () => {} }, kill: () => {} };
+          },
+        },
+      }),
+    };
+    try {
+      const process = await CodexAppServerProcess.spawn();
+      expect(callOptions).not.to.have.property("environment");
+      expect(callOptions).not.to.have.property("environmentAppend");
+      process.kill();
+    } finally {
+      (globalThis as any).ChromeUtils = originalChromeUtils;
       Object.defineProperty(globalThis, "navigator", {
         configurable: true,
         value: originalNavigator,
