@@ -547,6 +547,13 @@ export class LLMService {
     const id = (
       typeof providerId === "string" ? providerId : providerId.providerType
     ).toLowerCase();
+    const codingPlanProfile = endpoint
+      ? getCodingPlanProfileForEndpoint(endpoint)
+      : getCodingPlanProfile(id);
+    const httpCodingPlanProfile =
+      codingPlanProfile?.protocol === "openai-chat"
+        ? codingPlanProfile
+        : undefined;
     const enableTemperature = getPref("enableTemperature") ?? false;
     const enableMaxTokens = getPref("enableMaxTokens") ?? false;
     const enableTopP = getPref("enableTopP") ?? false;
@@ -594,9 +601,12 @@ export class LLMService {
 
     if (endpoint) {
       const isClaudeCli = endpoint.providerType === "claude-code-cli";
-      common.apiUrl = isClaudeCli ? "" : endpoint.apiUrl.trim();
+      common.apiUrl = isClaudeCli
+        ? ""
+        : endpoint.apiUrl?.trim() || httpCodingPlanProfile?.defaultApiUrl || "";
       common.apiKey = isClaudeCli ? "" : endpoint.apiKey.trim();
-      common.model = endpoint.model.trim();
+      common.model =
+        endpoint.model?.trim() || httpCodingPlanProfile?.defaultModel || "";
       if (endpoint.codingPlanVendor) {
         common.codingPlanVendor = endpoint.codingPlanVendor;
       }
@@ -617,6 +627,13 @@ export class LLMService {
         common.claudeRestricted = endpoint.claudeRestricted;
         common.claudeOutputFormat = endpoint.claudeOutputFormat;
       }
+    } else if (httpCodingPlanProfile) {
+      const keyManagerId = this.mapToKeyManagerId("openai-compat");
+      common.apiUrl = httpCodingPlanProfile.defaultApiUrl || "";
+      common.apiKey = ApiKeyManager.getCurrentKey(keyManagerId);
+      common.model = httpCodingPlanProfile.defaultModel.trim();
+      common.codingPlanVendor = httpCodingPlanProfile.id;
+      common.codingPlanProfile = httpCodingPlanProfile.id;
     } else if (id === "claude-code-cli") {
       common.apiUrl = "";
       common.apiKey = "";

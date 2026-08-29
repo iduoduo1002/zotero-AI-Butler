@@ -1,5 +1,7 @@
 import { expect } from "chai";
 import { LLMClient } from "../src/modules/llmClient";
+import { LLMService } from "../src/modules/llmService";
+import { LLMEndpointManager } from "../src/modules/llmEndpointManager";
 import { ProviderRegistry } from "../src/modules/llmproviders/ProviderRegistry";
 
 // =============== 改进测试说明 ==================
@@ -143,6 +145,20 @@ const providers = ProviderRegistry.list();
 describe("LLM Providers", function () {
   it("should have at least one provider registered", function () {
     expect(providers.length).to.be.greaterThan(0);
+  });
+
+  it("keeps Coding Plan profiles on the shared text-only OpenAI transport", function () {
+    const provider = ProviderRegistry.get("openai-compat");
+    expect(provider?.id).to.equal("openai-compat");
+
+    for (const profile of ["kimi-code", "zhipu-glm-coding"] as const) {
+      const endpoint = {
+        ...LLMEndpointManager.createEndpoint("openai-compat"),
+        codingPlanVendor: profile,
+        codingPlanProfile: profile,
+      };
+      expect(LLMService.endpointSupportsPdfBase64(endpoint)).to.equal(false);
+    }
   });
 
   for (const pid of providers) {
