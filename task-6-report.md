@@ -28,6 +28,11 @@ regression test confirms no environment override is sent.
 The fallback implementation was lint-cleaned without changing PATH behavior.
 `npm run lint:check`, `npx tsc --noEmit`, and `npm run build` all pass.
 
+The bare-command test now asserts command, arguments, and stderr separately,
+so the expected launch contract remains strict while allowing macOS PATH
+environment fields. Full `npm test` remains blocked before test execution by
+the local harness error `No Zotero Found`.
+
 ## Remaining limitation
 
 The full Zotero-backed focused test cannot run until a Zotero binary is

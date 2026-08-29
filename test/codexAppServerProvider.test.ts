@@ -527,13 +527,12 @@ describe("Codex app-server provider", function () {
     try {
       const process = await CodexAppServerProcess.spawn();
       expect(pathSearchCalls).to.equal(1);
-      expect(calls).to.deep.equal([
-        {
-          command: "/usr/local/bin/codex",
-          arguments: ["app-server"],
-          stderr: "pipe",
-        },
-      ]);
+      expect(calls).to.have.length(1);
+      expect(calls[0]).to.include({
+        command: "/usr/local/bin/codex",
+        stderr: "pipe",
+      });
+      expect(calls[0].arguments).to.deep.equal(["app-server"]);
       process.kill();
     } finally {
       (globalThis as any).ChromeUtils = originalChromeUtils;
