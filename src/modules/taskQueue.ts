@@ -36,6 +36,7 @@ import { TaskArtifacts, type FixedTaskArtifactType } from "./taskArtifacts";
 import { isTableFeatureEnabled } from "./uiCustomization";
 import LLMService from "./llmService";
 import { LLMEndpointManager, type LLMEndpoint } from "./llmEndpointManager";
+import type { CodingPlanVendor } from "./codingPlanProfiles";
 import {
   CodexTaskLedger,
   type CodexArtifactProbeSummary,
@@ -474,6 +475,9 @@ export interface TaskOptions {
   itemKey?: string;
   attachmentKey?: string;
   sourceSha256?: string;
+  /** Optional provider metadata for queue diagnostics; never contains secrets. */
+  codingPlanVendor?: CodingPlanVendor;
+  codingPlanProfile?: string;
 }
 
 /**
@@ -511,6 +515,9 @@ export interface TaskProgressMeta {
   attempt?: number;
   maxAttempts?: number;
   updatedAt?: string;
+  /** Optional provider metadata for progress/diagnostic consumers. */
+  codingPlanVendor?: CodingPlanVendor;
+  codingPlanProfile?: string;
 }
 
 export interface TaskItem {
@@ -3572,10 +3579,28 @@ export class TaskQueueManager {
           endpointId?: string;
           endpointName?: string;
           providerId?: string;
+          codingPlanVendor?: string;
+          codingPlanProfile?: string;
           suppressTaskRetry?: boolean;
         }
       | undefined;
     const runtime = this.getRuntimeDebugInfo();
+    let endpoint: LLMEndpoint | undefined;
+    if (errorInfo?.endpointId) {
+      try {
+        endpoint = LLMEndpointManager.getEndpoint(errorInfo.endpointId);
+      } catch {
+        endpoint = undefined;
+      }
+    }
+    const codingPlanVendor =
+      errorInfo?.codingPlanVendor ||
+      endpoint?.codingPlanVendor ||
+      task.options?.codingPlanVendor;
+    const codingPlanProfile =
+      errorInfo?.codingPlanProfile ||
+      endpoint?.codingPlanProfile ||
+      task.options?.codingPlanProfile;
     const unknownValue = getString("common-unknown-value");
     const noneValue = getString("common-none-value");
     const lines = [
@@ -3607,6 +3632,12 @@ export class TaskQueueManager {
       lines.push(`endpointName: ${errorInfo.endpointName || unknownValue}`);
       lines.push(`endpointId: ${errorInfo.endpointId || unknownValue}`);
       lines.push(`providerId: ${errorInfo.providerId || unknownValue}`);
+      if (codingPlanVendor) {
+        lines.push(`codingPlanVendor: ${codingPlanVendor}`);
+      }
+      if (codingPlanProfile) {
+        lines.push(`codingPlanProfile: ${codingPlanProfile}`);
+      }
     }
 
     if (errorInfo?.diagnosticText) {

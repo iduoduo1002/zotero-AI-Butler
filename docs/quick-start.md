@@ -31,6 +31,21 @@ Google Gemini 官方 API 测试连接成功示例：
 
 > ⚠ 若使用第三方中转平台，测试连接成功并不代表大模型 API 可用，需以实际功能为准。
 
+### 2.1 配置 Coding Plan 供应商（可选）
+
+在 **模型平台** 中添加对应 profile。Kimi Code 默认使用完整地址
+`https://api.kimi.com/coding/v1/chat/completions` 和模型 `kimi-for-coding`；GLM
+Coding Plan 默认使用完整地址 `https://open.bigmodel.cn/api/coding/paas/v4` 和模型
+`glm-5.3`。两者都需要各自供应商的 API Key，密钥只用于本地 HTTP 请求。
+
+Claude Code CLI 不填写 API 地址或 API Key：请确认本机已安装并登录 `claude`，在
+endpoint 详情中填写可执行文件绝对路径（或留空自动查找）。权限模式固定为 `plan`，
+受限模式和 `stream-json` 固定开启；若当前 CLI 版本不支持所需参数，连接测试会安全失败，
+不会回退到任意命令或 MCP。
+
+三类 profile 都只接受提取文本或 MinerU Markdown。PDF Base64、原始文件、图片和 MCP 均关闭。
+Coding Plan 协议兼容不代表订阅额度或模型资格，详见 [Coding Plan 供应商指南](coding-plan-providers.md)。
+
 ## 3. 配置本机 Codex App Server（可选）
 
 Codex App Server endpoint 使用当前操作系统用户的 Codex 登录状态，不在 Zotero 中填写 API 地址或 API 密钥。它适合希望由本机 Codex 负责规划、执行和验收的工作流。

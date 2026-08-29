@@ -1,6 +1,8 @@
 import { getString } from "../utils/locale";
+import { LLMEndpointManager } from "./llmEndpointManager";
 import type { LLMResponse } from "./llmproviders/types";
 import type { LLMTask } from "./llmService";
+import type { CodingPlanVendor } from "./codingPlanProfiles";
 
 export interface LLMNoteMetadata {
   schema: "AI_BUTLER_LLM_NOTE_BLOCK";
@@ -10,6 +12,9 @@ export interface LLMNoteMetadata {
   endpointId?: string;
   providerId: string;
   providerName: string;
+  /** Optional profile metadata; absent for legacy/non-Coding Plan notes. */
+  codingPlanVendor?: CodingPlanVendor;
+  codingPlanProfile?: string;
   modelId?: string;
   generatedAt: string;
   executionId?: string;
@@ -357,6 +362,27 @@ export class LLMNoteMetadataService {
     task: LLMTask | "chat",
     response?: LLMResponse | null,
   ): LLMNoteMetadata {
+    const responseWithProfile = response as
+      | (LLMResponse & {
+          codingPlanVendor?: CodingPlanVendor;
+          codingPlanProfile?: string;
+        })
+      | null
+      | undefined;
+    let endpoint: ReturnType<typeof LLMEndpointManager.getEndpoint>;
+    if (response?.endpointId) {
+      try {
+        endpoint = LLMEndpointManager.getEndpoint(response.endpointId);
+      } catch {
+        // Metadata formatting must remain usable in non-Zotero test/import
+        // contexts and for notes whose endpoint was removed.
+        endpoint = undefined;
+      }
+    }
+    const codingPlanVendor =
+      responseWithProfile?.codingPlanVendor || endpoint?.codingPlanVendor;
+    const codingPlanProfile =
+      responseWithProfile?.codingPlanProfile || endpoint?.codingPlanProfile;
     return {
       schema: "AI_BUTLER_LLM_NOTE_BLOCK",
       version: 1,
@@ -366,6 +392,8 @@ export class LLMNoteMetadataService {
       providerId: response?.providerId || "unknown",
       providerName:
         response?.providerName || response?.providerId || "Unknown provider",
+      codingPlanVendor,
+      codingPlanProfile,
       modelId: response?.model,
       generatedAt: response?.generatedAt || new Date().toISOString(),
       executionId: response?.executionId,

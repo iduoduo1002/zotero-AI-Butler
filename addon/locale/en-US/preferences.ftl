@@ -138,6 +138,24 @@ endpoint-codex-mcp-label = MCP Channel
 endpoint-codex-mcp-reserved = Not enabled (reserved; unavailable in v1)
 endpoint-codex-mcp-help = The v1 MCP channel is reserved and forced off; this control is locked so it cannot imply that Zotero tools are connected.
 endpoint-codex-test-help = Runs a real Codex App Server initialize and minimal turn test; no API URL or API key is required.
+endpoint-coding-plan-http-help = This profile uses an OpenAI-compatible Coding Plan endpoint. Keep the full URL, API key, and model ID here; subscription entitlement is not inferred from protocol compatibility.
+endpoint-coding-plan-claude-help = Claude Code CLI uses the local authenticated CLI session, not an Anthropic API key. API URL and API key are intentionally hidden.
+endpoint-coding-plan-pdf-help = Coding Plan providers accept extracted text or MinerU Markdown only. Base64 PDF, raw files, and image input are disabled.
+endpoint-coding-plan-mcp-help = MCP is forced off for Coding Plan providers. The queue still keeps the Sol planning/Luna execution/independent acceptance gate.
+endpoint-claude-section-title = Claude Code CLI Settings
+endpoint-claude-login-help = Use a locally installed and authenticated Claude Code CLI. The required restricted flags depend on the installed CLI version; unsupported versions fail closed.
+endpoint-claude-binary-path-label = Claude Binary Path
+endpoint-claude-binary-path-placeholder = Leave blank to discover claude automatically, e.g. /usr/local/bin/claude
+endpoint-claude-binary-path-help = Leave blank to search the local PATH, or enter an absolute path. AI Butler never reads or copies Claude credential files.
+endpoint-claude-permission-mode-label = Permission Mode
+endpoint-claude-permission-mode-plan = Plan (locked)
+endpoint-claude-permission-mode-help = Plan mode is required for this integration and cannot be changed from the settings page.
+endpoint-claude-restricted-label = Restricted Mode
+endpoint-claude-restricted-help = Always enabled and locked. The provider refuses to start if --restricted is unavailable or disabled.
+endpoint-claude-output-format-label = Output Format
+endpoint-claude-output-format-stream-json = stream-json (locked)
+endpoint-claude-output-format-help = stream-json is required for bounded assistant deltas and final-result parsing.
+endpoint-claude-test-help = Runs one restricted text-only Claude Code CLI connection test with the local login; no API URL or API key is used.
 
 # Settings: data management
 settings-data-title = 💾 Data Management
@@ -274,6 +292,7 @@ settings-api-openai-responses-note = ℹ️ <strong>Note</strong>: The current c
 settings-api-openai-compatible-note = ⚠️ <strong>Usage</strong>: Compatible with the legacy <code>/v1/chat/completions</code> format for third-party aggregators/proxies, such as SiliconFlow or OpenAI-compatible gateways.<br/>If you use official OpenAI, choose <strong>OpenAI (Responses API)</strong>.<br/>If the third party does not support PDF Base64 multimodal processing, switch PDF processing to Text Extraction.
 settings-api-volcanoark-note = ℹ️ <strong>Note</strong>: Volcano Ark provides a free daily quota of 2 million tokens and supports multimodal understanding.<br/>Recommended models: <code>doubao-seed-1-8-251228</code>, <code>doubao-seed-1-6-250615</code>
 settings-api-ollama-note = <strong>Note</strong>: Ollama uses the native <code>/api/chat</code> API. The default address is <code>http://localhost:11434</code>. Ollama does not support direct PDF Base64 uploads. Choose Text Extraction or MinerU in PDF processing settings.
+settings-api-coding-plan-pdf-note = <strong>Coding Plan compatibility</strong>: Kimi Code, GLM Coding Plan, and Claude Code CLI are text/MinerU-only integrations. Their provider cards hide or lock unsupported PDF Base64 and MCP controls; configure the local CLI login or vendor API key in Model Platforms.
 
 endpoint-pdf-base64-short = Base64 file input
 endpoint-pdf-text-short = Text extraction

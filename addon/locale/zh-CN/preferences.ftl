@@ -138,6 +138,24 @@ endpoint-codex-mcp-label = MCP 通道
 endpoint-codex-mcp-reserved = 未启用（保留，首版不可用）
 endpoint-codex-mcp-help = 首版 MCP 通道保留且强制关闭；勾选状态不可修改，避免误以为已连接 Zotero 工具。
 endpoint-codex-test-help = 执行一次真实的 Codex App Server initialize 与最小回合测试；不需要 API 地址或 API 密钥。
+endpoint-coding-plan-http-help = 此 profile 使用 OpenAI 兼容的 Coding Plan endpoint。请在这里保留完整地址、API 密钥和模型 ID；协议兼容不代表已获得订阅额度资格。
+endpoint-coding-plan-claude-help = Claude Code CLI 使用本机已登录的 CLI 会话，不使用 Anthropic API 密钥，因此会刻意隐藏 API 地址和 API 密钥。
+endpoint-coding-plan-pdf-help = Coding Plan 供应商只接受提取文本或 MinerU Markdown。Base64 PDF、原始文件和图片输入均已关闭。
+endpoint-coding-plan-mcp-help = Coding Plan 供应商强制关闭 MCP。队列仍保持 Sol 规划/Luna 执行/独立验收门禁。
+endpoint-claude-section-title = Claude Code CLI 设置
+endpoint-claude-login-help = 使用本机已安装并完成登录的 Claude Code CLI。所需受限参数取决于 CLI 版本；不支持的版本会安全拒绝启动。
+endpoint-claude-binary-path-label = Claude 二进制路径
+endpoint-claude-binary-path-placeholder = 留空自动查找 claude，例如 /usr/local/bin/claude
+endpoint-claude-binary-path-help = 留空时从本机 PATH 查找，也可填写绝对路径。AI Butler 不会读取或复制 Claude 凭据文件。
+endpoint-claude-permission-mode-label = 权限模式
+endpoint-claude-permission-mode-plan = Plan（锁定）
+endpoint-claude-permission-mode-help = 此集成必须使用 Plan 模式，不能在设置页改为其他权限模式。
+endpoint-claude-restricted-label = 受限模式
+endpoint-claude-restricted-help = 始终开启且锁定。若本机不支持或关闭 --restricted，Provider 会拒绝启动。
+endpoint-claude-output-format-label = 输出格式
+endpoint-claude-output-format-stream-json = stream-json（锁定）
+endpoint-claude-output-format-help = 必须使用 stream-json，才能解析受约束的 assistant 增量和最终结果。
+endpoint-claude-test-help = 使用本机登录执行一次受限的纯文本 Claude Code CLI 连接测试；不使用 API 地址或 API 密钥。
 
 # Settings: data management
 settings-data-title = 💾 数据管理
@@ -274,6 +292,7 @@ settings-api-openai-responses-note = ℹ️ <strong>说明</strong>：当前配�
 settings-api-openai-compatible-note = ⚠️ <strong>用途</strong>：用于兼容旧的 <code>/v1/chat/completions</code> 格式，适配第三方聚合/代理服务（SiliconFlow、OpenAI 兼容网关等）。<br/>若使用官方 OpenAI，请选择 <strong>OpenAI (Responses 新接口)</strong>。<br/>若第三方不支持 PDF Base64 多模态处理方式，请在 PDF 处理配置中改为“文本提取”模式。
 settings-api-volcanoark-note = ℹ️ <strong>说明</strong>：火山方舟提供每日 200 万 tokens 免费额度，支持多模态理解。<br/>推荐模型：<code>doubao-seed-1-8-251228</code>、<code>doubao-seed-1-6-250615</code>
 settings-api-ollama-note = <strong>说明</strong>：Ollama 使用原生 <code>/api/chat</code> 接口，默认地址为 <code>http://localhost:11434</code>。Ollama 不支持直接上传 PDF Base64；请在 PDF 处理配置中选择“文本提取”或“MinerU”。
+settings-api-coding-plan-pdf-note = <strong>Coding Plan 兼容性</strong>：Kimi Code、GLM Coding Plan 和 Claude Code CLI 均只支持文本/MinerU。它们的供应商卡片会隐藏或锁定不支持的 PDF Base64 和 MCP 控件；请在“模型平台”中配置本机 CLI 登录或供应商 API 密钥。
 
 endpoint-pdf-base64-short = Base64 文件输入
 endpoint-pdf-text-short = 文本提取

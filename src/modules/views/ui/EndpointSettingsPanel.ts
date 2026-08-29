@@ -4,6 +4,12 @@ import { getPref, setPref } from "../../../utils/prefs";
 import LLMService from "../../llmService";
 import { normalizeReasoningEffortSetting } from "../../llmproviders/shared/reasoning";
 import {
+  getCodingPlanProfile,
+  listCodingPlanProfiles,
+  type CodingPlanProfile,
+  type CodingPlanVendor,
+} from "../../codingPlanProfiles";
+import {
   LLMEndpointManager,
   type LLMEndpoint,
   type LLMEndpointProviderType,
@@ -25,8 +31,70 @@ type EndpointPanelOptions = {
 
 type DraftEndpoint = {
   name: string;
-  providerType: LLMEndpointProviderType;
+  providerType: LLMEndpointProviderType | CodingPlanVendor;
 };
+
+export type EndpointProviderUiCapabilities = {
+  showApiUrl: boolean;
+  showApiKey: boolean;
+  showClaudeBinaryPath: boolean;
+  showClaudePermissionMode: boolean;
+  showClaudeRestricted: boolean;
+  showClaudeOutputFormat: boolean;
+  supportsConnectionTest: boolean;
+  pdfModes: string[];
+  mcpEnabled: boolean;
+};
+
+export type EndpointProviderOption = {
+  value: string;
+  label: string;
+  codingPlanProfile?: string;
+  defaultApiUrl?: string;
+  defaultModel?: string;
+  ui?: EndpointProviderUiCapabilities;
+};
+
+function codingPlanLabelKey(id: CodingPlanVendor): FluentMessageId {
+  switch (id) {
+    case "kimi-code":
+      return "llm-endpoint-provider-kimi-code";
+    case "zhipu-glm-coding":
+      return "llm-endpoint-provider-zhipu-glm-coding";
+    case "claude-code-cli":
+      return "llm-endpoint-provider-claude-code-cli";
+  }
+}
+
+function codingPlanProfileForEndpoint(
+  endpoint: Pick<
+    LLMEndpoint,
+    "providerType" | "codingPlanVendor" | "codingPlanProfile"
+  >,
+): CodingPlanProfile | undefined {
+  return (
+    getCodingPlanProfile(endpoint.codingPlanProfile) ||
+    getCodingPlanProfile(endpoint.codingPlanVendor) ||
+    getCodingPlanProfile(endpoint.providerType)
+  );
+}
+
+function codingPlanUiCapabilities(
+  profile: CodingPlanProfile,
+): EndpointProviderUiCapabilities {
+  const isClaudeCli = profile.id === "claude-code-cli";
+  return {
+    showApiUrl: profile.protocol === "openai-chat",
+    showApiKey: profile.requiresApiKey,
+    showClaudeBinaryPath: isClaudeCli,
+    showClaudePermissionMode: isClaudeCli,
+    showClaudeRestricted: isClaudeCli,
+    showClaudeOutputFormat: isClaudeCli,
+    supportsConnectionTest: true,
+    pdfModes: ["text", "mineru"],
+    mcpEnabled: false,
+  };
+}
 
 function doc(): Document {
   return Zotero.getMainWindow().document;
@@ -36,19 +104,24 @@ function t(key: FluentMessageId, args?: Record<string, unknown>): string {
   return getString(key, args ? { args } : {});
 }
 
-export function endpointProviderOptions(): Array<{
-  value: string;
-  label: string;
-}> {
-  // The generic endpoint form has no safe Claude CLI controls yet. Keep the
-  // provider discoverable to the runtime, but do not let this form create one
-  // until the profile-aware Task 4 UI is available.
-  return LLMEndpointManager.providerTypes()
-    .filter((providerType) => providerType !== "claude-code-cli")
+export function endpointProviderOptions(): EndpointProviderOption[] {
+  const profiles = listCodingPlanProfiles();
+  const profileIds = new Set(profiles.map((profile) => profile.id));
+  const genericOptions = LLMEndpointManager.providerTypes()
+    .filter((providerType) => !profileIds.has(providerType as CodingPlanVendor))
     .map((providerType) => ({
       value: providerType,
       label: LLMEndpointManager.providerLabel(providerType),
     }));
+  const codingPlanOptions = profiles.map((profile) => ({
+    value: profile.id,
+    label: localizedCodingPlanLabel(profile),
+    codingPlanProfile: profile.id,
+    defaultApiUrl: profile.defaultApiUrl,
+    defaultModel: profile.defaultModel,
+    ui: codingPlanUiCapabilities(profile),
+  }));
+  return [...genericOptions, ...codingPlanOptions];
 }
 
 function smallMuted(text: string): HTMLElement {
@@ -89,11 +162,24 @@ function localizedPdfProcessModeLabel(mode: string): string {
   return t("endpoint-pdf-base64-short");
 }
 
+function localizedCodingPlanLabel(profile: CodingPlanProfile): string {
+  const key = codingPlanLabelKey(profile.id);
+  const localized = t(key);
+  return localized === key ? profile.label : localized;
+}
+
 function pdfProcessModeOptions(
   endpoint?: LLMEndpoint,
 ): Array<{ value: string; label: string }> {
   if (endpoint?.providerType === "codex-app-server") {
     return [{ value: "text", label: t("endpoint-pdf-text") }];
+  }
+  const profile = endpoint && codingPlanProfileForEndpoint(endpoint);
+  if (profile && !profile.supportsPdfBase64) {
+    return [
+      { value: "text", label: t("endpoint-pdf-text") },
+      { value: "mineru", label: t("endpoint-pdf-mineru") },
+    ];
   }
   const globalLabel = localizedPdfProcessModeLabel(
     LLMEndpointManager.getGlobalPdfProcessMode(),
@@ -107,6 +193,7 @@ function pdfProcessModeOptions(
 }
 
 function endpointSupportsReasoningEffort(endpoint: LLMEndpoint): boolean {
+  if (codingPlanProfileForEndpoint(endpoint)) return false;
   return (
     endpoint.providerType === "openai" ||
     endpoint.providerType === "openai-compat" ||
@@ -486,7 +573,7 @@ export class EndpointSettingsPanel {
       });
       const detail = document.createElement("div");
       detail.textContent = t("endpoint-multi-summary-detail", {
-        provider: LLMEndpointManager.providerLabel(endpoint.providerType),
+        provider: this.endpointProviderLabel(endpoint),
         model: endpoint.model || t("endpoint-model-empty"),
         pdf: this.describeEndpointPdfMode(endpoint),
       });
@@ -629,7 +716,7 @@ export class EndpointSettingsPanel {
     });
     const type = document.createElement("div");
     type.textContent = t("endpoint-card-subtitle", {
-      provider: LLMEndpointManager.providerLabel(endpoint.providerType),
+      provider: this.endpointProviderLabel(endpoint),
       pdf: this.describeEndpointPdfMode(endpoint),
     });
     Object.assign(type.style, {
@@ -750,11 +837,17 @@ export class EndpointSettingsPanel {
       background: "var(--ai-surface)",
     });
 
-    if (endpoint.providerType === "codex-app-server") {
+    const profile = codingPlanProfileForEndpoint(endpoint);
+    if (profile?.id === "claude-code-cli") {
+      details.appendChild(this.renderClaudeSettings(endpoint, profile));
+    } else if (endpoint.providerType === "codex-app-server") {
       details.appendChild(this.renderCodexSettings(endpoint));
     } else {
       details.appendChild(this.renderApiUrlField(endpoint));
       details.appendChild(this.renderApiKeyField(endpoint));
+    }
+    if (profile) {
+      details.appendChild(this.renderCodingPlanProfileHelp(profile));
     }
     details.appendChild(this.renderModelField(endpoint));
     details.appendChild(this.renderPdfProcessModeField(endpoint));
@@ -992,6 +1085,175 @@ export class EndpointSettingsPanel {
     return section;
   }
 
+  private endpointProviderLabel(endpoint: LLMEndpoint): string {
+    const profile = codingPlanProfileForEndpoint(endpoint);
+    return profile
+      ? localizedCodingPlanLabel(profile)
+      : LLMEndpointManager.providerLabel(endpoint.providerType);
+  }
+
+  private renderCodingPlanProfileHelp(profile: CodingPlanProfile): HTMLElement {
+    const document = doc();
+    const section = document.createElement("div");
+    section.id = `endpoint-coding-plan-help-${profile.id}`;
+    section.setAttribute("data-coding-plan-profile", profile.id);
+    Object.assign(section.style, {
+      marginBottom: "18px",
+      padding: "12px",
+      border: "1px solid rgba(89, 192, 188, 0.45)",
+      borderRadius: "6px",
+      background: "rgba(89, 192, 188, 0.06)",
+      boxSizing: "border-box",
+    });
+
+    const profileHelp = document.createElement("div");
+    profileHelp.textContent =
+      profile.protocol === "claude-cli"
+        ? t("endpoint-coding-plan-claude-help")
+        : t("endpoint-coding-plan-http-help");
+    Object.assign(profileHelp.style, {
+      color: "var(--ai-text)",
+      fontSize: "12px",
+      lineHeight: "1.45",
+      marginBottom: "6px",
+    });
+    section.appendChild(profileHelp);
+
+    const pdfHelp = document.createElement("div");
+    pdfHelp.textContent = t("endpoint-coding-plan-pdf-help");
+    Object.assign(pdfHelp.style, {
+      color: "var(--ai-text-muted)",
+      fontSize: "12px",
+      lineHeight: "1.45",
+      marginBottom: "4px",
+    });
+    section.appendChild(pdfHelp);
+
+    const mcpHelp = document.createElement("div");
+    mcpHelp.textContent = t("endpoint-coding-plan-mcp-help");
+    Object.assign(mcpHelp.style, {
+      color: "var(--ai-text-muted)",
+      fontSize: "12px",
+      lineHeight: "1.45",
+    });
+    section.appendChild(mcpHelp);
+    return section;
+  }
+
+  private renderClaudeSettings(
+    endpoint: LLMEndpoint,
+    _profile: CodingPlanProfile,
+  ): HTMLElement {
+    const document = doc();
+    const section = document.createElement("div");
+    section.id = `endpoint-${endpoint.id}-claude-settings`;
+    section.setAttribute("data-claude-code-settings", "true");
+    Object.assign(section.style, {
+      marginBottom: "18px",
+      padding: "12px",
+      border: "1px solid rgba(89, 192, 188, 0.45)",
+      borderRadius: "6px",
+      background: "rgba(89, 192, 188, 0.06)",
+      boxSizing: "border-box",
+    });
+
+    const title = document.createElement("div");
+    title.textContent = t("endpoint-claude-section-title");
+    Object.assign(title.style, {
+      marginBottom: "4px",
+      color: "var(--ai-text)",
+      fontSize: "14px",
+      fontWeight: "700",
+    });
+    section.appendChild(title);
+    section.appendChild(smallMuted(t("endpoint-claude-login-help")));
+
+    const binaryPathInput = createInput(
+      `endpoint-${endpoint.id}-claudeBinaryPath`,
+      "text",
+      endpoint.claudeBinaryPath || "",
+      t("endpoint-claude-binary-path-placeholder"),
+    );
+    binaryPathInput.addEventListener("input", () => {
+      endpoint.claudeBinaryPath = binaryPathInput.value.trim();
+      this.persist();
+    });
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-claude-binary-path-label"),
+        binaryPathInput,
+        t("endpoint-claude-binary-path-help"),
+      ),
+    );
+
+    endpoint.claudePermissionMode = "plan";
+    const permissionSelect = createSelect(
+      `endpoint-${endpoint.id}-claudePermissionMode`,
+      [{ value: "plan", label: t("endpoint-claude-permission-mode-plan") }],
+      "plan",
+      () => {
+        endpoint.claudePermissionMode = "plan";
+        this.persist();
+      },
+    );
+    permissionSelect.setAttribute("data-locked-value", "plan");
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-claude-permission-mode-label"),
+        permissionSelect,
+        t("endpoint-claude-permission-mode-help"),
+      ),
+    );
+
+    // The provider rejects disabled restricted mode. Keep the persisted
+    // endpoint aligned with the only safe value before exposing the locked UI.
+    endpoint.claudeRestricted = true;
+    const restrictedInput = document.createElement("input");
+    restrictedInput.type = "checkbox";
+    restrictedInput.id = `setting-endpoint-${endpoint.id}-claudeRestricted`;
+    restrictedInput.checked = true;
+    restrictedInput.disabled = true;
+    restrictedInput.title = t("endpoint-claude-restricted-help");
+    Object.assign(restrictedInput.style, {
+      width: "20px",
+      height: "20px",
+      cursor: "not-allowed",
+    });
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-claude-restricted-label"),
+        restrictedInput,
+        t("endpoint-claude-restricted-help"),
+      ),
+    );
+
+    endpoint.claudeOutputFormat = "stream-json";
+    const outputFormatSelect = createSelect(
+      `endpoint-${endpoint.id}-claudeOutputFormat`,
+      [
+        {
+          value: "stream-json",
+          label: t("endpoint-claude-output-format-stream-json"),
+        },
+      ],
+      "stream-json",
+      () => {
+        endpoint.claudeOutputFormat = "stream-json";
+        this.persist();
+      },
+    );
+    outputFormatSelect.setAttribute("data-locked-value", "stream-json");
+    section.appendChild(
+      createFormGroup(
+        t("endpoint-claude-output-format-label"),
+        outputFormatSelect,
+        t("endpoint-claude-output-format-help"),
+      ),
+    );
+
+    return section;
+  }
+
   private renderApiUrlField(endpoint: LLMEndpoint): HTMLElement {
     const document = doc();
     const group = document.createElement("div");
@@ -1014,7 +1276,8 @@ export class EndpointSettingsPanel {
       `endpoint-${endpoint.id}-url`,
       "text",
       endpoint.apiUrl,
-      LLMEndpointManager.providerDefaults(endpoint.providerType).apiUrl,
+      codingPlanProfileForEndpoint(endpoint)?.defaultApiUrl ||
+        LLMEndpointManager.providerDefaults(endpoint.providerType).apiUrl,
     );
     apiUrlInput.addEventListener("input", () => {
       endpoint.apiUrl = apiUrlInput.value;
@@ -1118,9 +1381,11 @@ export class EndpointSettingsPanel {
         : t("endpoint-api-key-required-label"),
       wrapper,
       fieldDescription(
-        allowsEmptyKey
-          ? t("endpoint-ollama-key-help")
-          : t("endpoint-api-key-help"),
+        codingPlanProfileForEndpoint(endpoint)
+          ? t("endpoint-coding-plan-http-help")
+          : allowsEmptyKey
+            ? t("endpoint-ollama-key-help")
+            : t("endpoint-api-key-help"),
       ),
     );
   }
@@ -1145,7 +1410,8 @@ export class EndpointSettingsPanel {
       `endpoint-${endpoint.id}-model`,
       "text",
       endpoint.model,
-      LLMEndpointManager.providerDefaults(endpoint.providerType).model,
+      codingPlanProfileForEndpoint(endpoint)?.defaultModel ||
+        LLMEndpointManager.providerDefaults(endpoint.providerType).model,
     );
     modelInput.addEventListener("input", () => {
       endpoint.model = modelInput.value;
@@ -1155,7 +1421,8 @@ export class EndpointSettingsPanel {
     row.appendChild(modelInput);
 
     const fetchButton =
-      endpoint.providerType === "codex-app-server"
+      endpoint.providerType === "codex-app-server" ||
+      codingPlanProfileForEndpoint(endpoint)?.id === "claude-code-cli"
         ? null
         : createStyledButton(t("endpoint-fetch-models"), "#667eea", "small");
     if (fetchButton) row.appendChild(fetchButton);
@@ -1186,9 +1453,13 @@ export class EndpointSettingsPanel {
   private renderPdfProcessModeField(endpoint: LLMEndpoint): HTMLElement {
     const document = doc();
     const isCodex = endpoint.providerType === "codex-app-server";
-    const value = isCodex
-      ? "text"
-      : LLMEndpointManager.normalizePdfProcessMode(endpoint.pdfProcessMode);
+    const profile = codingPlanProfileForEndpoint(endpoint);
+    const value =
+      isCodex || (profile && !profile.supportsPdfBase64)
+        ? endpoint.pdfProcessMode === "mineru"
+          ? "mineru"
+          : "text"
+        : LLMEndpointManager.normalizePdfProcessMode(endpoint.pdfProcessMode);
     endpoint.pdfProcessMode = value;
 
     const wrapper = document.createElement("div");
@@ -1203,9 +1474,12 @@ export class EndpointSettingsPanel {
       pdfProcessModeOptions(endpoint),
       value,
       (newValue) => {
-        endpoint.pdfProcessMode = isCodex
-          ? "text"
-          : LLMEndpointManager.normalizePdfProcessMode(newValue);
+        endpoint.pdfProcessMode =
+          isCodex || (profile && !profile.supportsPdfBase64)
+            ? newValue === "mineru"
+              ? "mineru"
+              : "text"
+            : LLMEndpointManager.normalizePdfProcessMode(newValue);
         this.persist();
         this.render();
       },
@@ -1368,7 +1642,9 @@ export class EndpointSettingsPanel {
       fieldDescription(
         endpoint.providerType === "codex-app-server"
           ? t("endpoint-codex-test-help")
-          : t("endpoint-test-help"),
+          : codingPlanProfileForEndpoint(endpoint)?.id === "claude-code-cli"
+            ? t("endpoint-claude-test-help")
+            : t("endpoint-test-help"),
       ),
     );
   }
@@ -1596,7 +1872,9 @@ export class EndpointSettingsPanel {
     confirmButton.addEventListener("click", () => {
       validate();
       if (confirmButton.disabled) return;
-      const endpoint = LLMEndpointManager.createEndpoint(draft.providerType);
+      const endpoint = LLMEndpointManager.createEndpoint(
+        draft.providerType as LLMEndpointProviderType,
+      );
       endpoint.name = draft.name;
       this.endpoints.push(endpoint);
       this.expandedEndpointIds.add(endpoint.id);
@@ -1680,14 +1958,18 @@ export class EndpointSettingsPanel {
   }
 
   private buildEndpointPreview(endpoint: LLMEndpoint): string {
+    const profile = codingPlanProfileForEndpoint(endpoint);
     const defaults = LLMEndpointManager.providerDefaults(endpoint.providerType);
     const rawUrl = (endpoint.apiUrl || defaults.apiUrl).trim();
     const model = (endpoint.model || defaults.model)
       .trim()
       .replace(/^models\//, "");
 
-    if (endpoint.providerType === "codex-app-server") {
-      return `${LLMEndpointManager.providerLabel(endpoint.providerType)} · ${model}`;
+    if (
+      endpoint.providerType === "codex-app-server" ||
+      profile?.protocol === "claude-cli"
+    ) {
+      return `${this.endpointProviderLabel(endpoint)} · ${model}`;
     }
 
     if (endpoint.providerType === "openai") {
@@ -1695,7 +1977,8 @@ export class EndpointSettingsPanel {
     }
     if (
       endpoint.providerType === "openai-compat" ||
-      endpoint.providerType === "openrouter"
+      endpoint.providerType === "openrouter" ||
+      profile?.protocol === "openai-chat"
     ) {
       return this.toChatCompletionsEndpoint(rawUrl);
     }
