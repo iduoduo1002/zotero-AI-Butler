@@ -3,11 +3,16 @@ import { listCodingPlanProfiles } from "../src/modules/codingPlanProfiles";
 import { endpointProviderOptions } from "../src/modules/views/ui/EndpointSettingsPanel";
 import { LLMNoteMetadataService } from "../src/modules/llmNoteMetadata";
 
+const initialAddon = (globalThis as any).addon;
+const initialLocale = initialAddon?.data?.locale;
+
 describe("Coding Plan provider settings UI", function () {
   let previousAddon: any;
+  let previousLocale: any;
 
   beforeEach(function () {
     previousAddon = (globalThis as any).addon;
+    previousLocale = previousAddon?.data?.locale;
     const globalAddon = (globalThis as any).addon || { data: {} };
     (globalThis as any).addon = globalAddon;
     globalAddon.data = globalAddon.data || {};
@@ -21,8 +26,13 @@ describe("Coding Plan provider settings UI", function () {
   });
 
   afterEach(function () {
-    if (previousAddon) (globalThis as any).addon = previousAddon;
-    else delete (globalThis as any).addon;
+    if (previousAddon) {
+      previousAddon.data = previousAddon.data || {};
+      previousAddon.data.locale = previousLocale;
+      (globalThis as any).addon = previousAddon;
+    } else {
+      delete (globalThis as any).addon;
+    }
   });
 
   it("exposes every catalog profile with its defaults and UI capability metadata", function () {
@@ -86,5 +96,13 @@ describe("Coding Plan provider settings UI", function () {
       codingPlanVendor: "kimi-code",
       codingPlanProfile: "kimi-code",
     });
+  });
+
+  it("captures the restored locale before applying the next temporary setup", function () {
+    expect(previousAddon).to.equal(initialAddon);
+    expect(previousLocale).to.equal(initialLocale);
+    expect((globalThis as any).addon?.data?.locale).to.not.equal(
+      previousLocale,
+    );
   });
 });
