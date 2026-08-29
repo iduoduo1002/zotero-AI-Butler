@@ -464,6 +464,92 @@ describe("restricted Claude Code CLI provider", function () {
     }
   });
 
+  it("waits for delayed stdout before notifying exit after kill", async function () {
+    let releaseStdout!: (value: string) => void;
+    let stdoutReads = 0;
+    const stdoutReady = new Promise<string>((resolve) => {
+      releaseStdout = resolve;
+    });
+    const raw = {
+      stdout: {
+        readString: async () => {
+          if (stdoutReads++ === 0) return stdoutReady;
+          return "";
+        },
+      },
+      kill: () => {},
+    };
+    const process = new ClaudeCodeCliProcess(raw);
+    const lines: string[] = [];
+    const exitCodes: Array<number | undefined> = [];
+    process.onLine((line) => lines.push(line));
+    process.onExit((code) => exitCodes.push(code));
+    const killing = Promise.resolve(process.kill());
+
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(exitCodes).to.deep.equal([]);
+
+      releaseStdout('{"type":"result","result":"killed-late"}');
+      await killing;
+      expect(lines).to.deep.equal(['{"type":"result","result":"killed-late"}']);
+      expect(exitCodes).to.deep.equal([undefined]);
+    } finally {
+      releaseStdout("");
+      await process.wait();
+    }
+  });
+
+  it("bounds exit notification when raw.wait rejects and stdout never reaches EOF", async function () {
+    const raw = {
+      stdout: {
+        readString: async () => new Promise<string>(() => undefined),
+      },
+      wait: async () => {
+        throw new Error("wait failed");
+      },
+      kill: () => {},
+    };
+    const process = new ClaudeCodeCliProcess(raw);
+    let exitCount = 0;
+    const exited = new Promise<void>((resolve) => {
+      process.onExit(() => {
+        exitCount += 1;
+        resolve();
+      });
+    });
+
+    const observedInTime = await Promise.race([
+      exited.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+    ]);
+    expect(observedInTime).to.equal(true);
+    expect(exitCount).to.equal(1);
+    await process.kill();
+  });
+
+  it("keeps kill and exit notification idempotent", async function () {
+    let killCount = 0;
+    const raw = {
+      stdout: { readString: async () => "" },
+      kill: () => {
+        killCount += 1;
+      },
+    };
+    const process = new ClaudeCodeCliProcess(raw);
+    let exitCount = 0;
+    process.onExit(() => {
+      exitCount += 1;
+    });
+
+    await Promise.all([
+      Promise.resolve(process.kill()),
+      Promise.resolve(process.kill()),
+    ]);
+    expect(killCount).to.equal(1);
+    expect(exitCount).to.equal(1);
+  });
+
   it("kills a task-scoped process on abort and timeout", async function () {
     const abortFake = new FakeClaudeCodeProcess({}, "hold");
     const abortProvider = new ClaudeCodeCliProvider(() => abortFake);

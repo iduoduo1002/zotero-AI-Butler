@@ -97,3 +97,19 @@ exit code 0。
 Fix round verification：Claude focused **13 passing**；source `tsc --noEmit`、目标
 ESLint/Prettier、`npm run build`（含 i18n/built-locale）均 **PASS**；未运行真实
 Claude credential smoke。
+
+## Fix round 2 — kill/stdout drain bounded cleanup
+
+Review round 2 发现 `kill()` 仍可能在 delayed stdout/partial JSONL flush 前通知
+退出，且 `raw.wait()` rejection 遇到永不 EOF 的 stdout 会无限等待。现已修复：
+
+- `kill()` 变为 task-scoped、幂等的 bounded cleanup，先尽量等待 raw kill 完成、
+  stdout drain/partial flush 和 stderr drain，再发一次 `onExit`；超时后强制收口。
+- `raw.wait()` 正常完成和 rejection 路径均对 stdout drain 使用 250ms bounded wait，
+  不再因永不 EOF 的 reader 死锁；无 `raw.wait()` 路径仍由 stdout 完成后 cleanup。
+- `exitNotified` 与共享 `killPromise` 保证重复 kill/自然退出不会双通知。
+
+新增 fake 回归覆盖 kill+delayed stdout、wait reject+never EOF 的有界通知及双 kill。
+Fix round 2 verification：Claude focused **16 passing**；source `tsc --noEmit`、目标
+ESLint/Prettier、`npm run build`（含 i18n/built-locale）均 **PASS**；未运行真实
+Claude credential smoke。

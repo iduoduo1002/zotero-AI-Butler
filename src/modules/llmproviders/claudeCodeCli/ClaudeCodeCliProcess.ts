@@ -32,6 +32,7 @@ type SubprocessModule = {
 
 const MAX_DIAGNOSTIC_LENGTH = 4000;
 const STDERR_DRAIN_WAIT_MS = 100;
+const STDOUT_DRAIN_WAIT_MS = 250;
 
 /**
  * Deliberately fixed CLI surface. Prompt text is sent through stdin and is
@@ -90,6 +91,7 @@ export class ClaudeCodeCliProcess implements ClaudeCodeCliProcessLike {
   private stderrLoopPromise: Promise<void> | undefined;
   private stderrDone = false;
   private stdinClosed = false;
+  private killPromise: Promise<void> | undefined;
 
   constructor(rawProcess: unknown) {
     this.raw = rawProcess as RawSubprocess;
@@ -213,36 +215,41 @@ export class ClaudeCodeCliProcess implements ClaudeCodeCliProcessLike {
   }
 
   kill(): void | Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+    if (this.exitNotified) return;
+    if (this.killPromise) return this.killPromise;
     let result: void | Promise<void>;
+    let killError: unknown;
     try {
       result = this.raw.kill?.();
     } catch (error) {
-      this.notifyExit(this.exitCode);
-      throw error;
+      result = undefined;
+      killError = error;
     }
 
-    const finish = () => {
+    const killCompletion = Promise.resolve(result).catch((error) => {
+      killError = error;
+    });
+    this.killPromise = (async () => {
+      await Promise.race([
+        killCompletion,
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, STDOUT_DRAIN_WAIT_MS),
+        ),
+      ]);
+      await this.waitForStdoutDrain();
+      await this.waitForStderrDrain();
+      this.closed = true;
       this.notifyExit(this.exitCode);
-      // If the platform does not expose a wait promise, continue draining
-      // stderr asynchronously after notifying listeners.
-      void this.drainStderrAfterKill();
-    };
-    if (result && typeof (result as Promise<void>).then === "function") {
-      return Promise.resolve(result).then(finish);
-    }
-    finish();
+      if (killError) throw killError;
+    })();
+    return this.killPromise;
   }
 
   /** Wait for process wait/read loops, chiefly useful to lifecycle callers. */
   async wait(): Promise<void> {
     await this.waitPromise;
-    await Promise.all(
-      [this.readLoopPromise, this.stderrLoopPromise].filter(
-        (task): task is Promise<void> => Boolean(task),
-      ),
-    );
+    await this.waitForStdoutDrain();
+    await this.waitForStderrDrain();
   }
 
   /** Return bounded, path/token-redacted stderr diagnostics. */
@@ -406,12 +413,10 @@ export class ClaudeCodeCliProcess implements ClaudeCodeCliProcessLike {
 
   private async waitForStdoutDrain(): Promise<void> {
     if (!this.readLoopPromise) return;
-    try {
-      await this.readLoopPromise;
-    } catch {
-      // A Zotero InputPipe may reject at EOF; raw.wait remains the exit-code
-      // authority, but all available stdout has still been drained/flushed.
-    }
+    await Promise.race([
+      this.readLoopPromise.catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, STDOUT_DRAIN_WAIT_MS)),
+    ]);
   }
 
   private async notifyAfterStreams(): Promise<void> {
@@ -420,10 +425,6 @@ export class ClaudeCodeCliProcess implements ClaudeCodeCliProcessLike {
     await this.waitForStderrDrain();
     this.closed = true;
     this.notifyExit(this.exitCode);
-  }
-
-  private async drainStderrAfterKill(): Promise<void> {
-    await this.waitForStderrDrain();
   }
 
   private decodeChunk(chunk: string | Uint8Array): string {
