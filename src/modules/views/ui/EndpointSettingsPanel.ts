@@ -36,11 +36,19 @@ function t(key: FluentMessageId, args?: Record<string, unknown>): string {
   return getString(key, args ? { args } : {});
 }
 
-function endpointProviderOptions(): Array<{ value: string; label: string }> {
-  return LLMEndpointManager.providerTypes().map((providerType) => ({
-    value: providerType,
-    label: LLMEndpointManager.providerLabel(providerType),
-  }));
+export function endpointProviderOptions(): Array<{
+  value: string;
+  label: string;
+}> {
+  // The generic endpoint form has no safe Claude CLI controls yet. Keep the
+  // provider discoverable to the runtime, but do not let this form create one
+  // until the profile-aware Task 4 UI is available.
+  return LLMEndpointManager.providerTypes()
+    .filter((providerType) => providerType !== "claude-code-cli")
+    .map((providerType) => ({
+      value: providerType,
+      label: LLMEndpointManager.providerLabel(providerType),
+    }));
 }
 
 function smallMuted(text: string): HTMLElement {

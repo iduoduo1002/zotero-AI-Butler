@@ -174,7 +174,10 @@ describe("LLMEndpointManager", function () {
   it("migrates a legacy Kimi provider selection to its profile defaults", function () {
     Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
     Zotero.Prefs.set(prefName("provider"), "kimi-code", true);
+    Zotero.Prefs.set(prefName("openaiCompatApiUrl"), "", true);
     Zotero.Prefs.set(prefName("openaiCompatApiKey"), "kimi-key", true);
+    Zotero.Prefs.set(prefName("openaiCompatModel"), "", true);
+    Zotero.Prefs.set(prefName("openaiApiModel"), "", true);
 
     const [endpoint] = LLMEndpointManager.getEndpoints();
 

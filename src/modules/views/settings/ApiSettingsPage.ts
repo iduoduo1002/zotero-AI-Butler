@@ -2002,6 +2002,11 @@ export class ApiSettingsPage {
         apiKeyId: "",
         modelId: "codexModel",
       },
+      "claude-code-cli": {
+        apiUrlId: "",
+        apiKeyId: "",
+        modelId: "claudeModel",
+      },
     };
     const config = configs[keyManagerId];
 
@@ -2121,6 +2126,7 @@ export class ApiSettingsPage {
         volcanoark: "volcanoArkApiKey",
         ollama: "ollamaApiKey",
         "codex-app-server": "",
+        "claude-code-cli": "",
       };
       const prefKey = mapping[providerId];
       if (prefKey) {
@@ -3190,6 +3196,7 @@ export class ApiSettingsPage {
    * 映射提供商ID到KeyManagerId
    */
   private mapToKeyManagerId(provider: string): ProviderId {
+    if (provider === "claude-code-cli") return "claude-code-cli";
     if (provider === "google") return "google";
     if (provider === "anthropic") return "anthropic";
     if (provider === "openrouter") return "openrouter";

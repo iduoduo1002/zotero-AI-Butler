@@ -11,6 +11,7 @@ import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { getConfiguredSummaryPrompt } from "../utils/prompts";
 import { ApiKeyManager, type ProviderId } from "./apiKeyManager";
+import { getCodingPlanProfile } from "./codingPlanProfiles";
 import {
   LLMEndpointManager,
   type LLMEndpoint,
@@ -333,11 +334,32 @@ function injectCodexContractIntoConversation(
   ];
 }
 
-function assertCodexInputAllowed(
+function getCodingPlanProfileForEndpoint(
+  endpoint?: Pick<
+    LLMEndpoint,
+    "providerType" | "codingPlanVendor" | "codingPlanProfile"
+  >,
+) {
+  if (!endpoint) return undefined;
+  return (
+    getCodingPlanProfile(endpoint.codingPlanProfile) ||
+    getCodingPlanProfile(endpoint.codingPlanVendor) ||
+    getCodingPlanProfile(endpoint.providerType)
+  );
+}
+
+function endpointDisallowsPdfBase64(endpoint?: LLMEndpoint): boolean {
+  return (
+    endpoint?.providerType === "codex-app-server" ||
+    getCodingPlanProfileForEndpoint(endpoint)?.supportsPdfBase64 === false
+  );
+}
+
+function assertEndpointInputAllowed(
   endpoint: LLMEndpoint,
   content: LLMContentInput,
 ): void {
-  if (endpoint.providerType !== "codex-app-server") return;
+  if (!endpointDisallowsPdfBase64(endpoint)) return;
   const hasStructuredBase64 =
     content.kind === "pdf-files" &&
     content.files.some(
@@ -452,6 +474,7 @@ export class LLMService {
   static mapToKeyManagerId(providerId: string): ProviderId {
     const id = providerId.toLowerCase();
     if (id === "codex-app-server") return "codex-app-server";
+    if (id === "claude-code-cli") return "claude-code-cli";
     if (id.includes("gemini") || id === "google") return "google";
     if (id.includes("anthropic") || id.includes("claude")) return "anthropic";
     if (id === "openai-compat") return "openai-compat";
@@ -570,9 +593,16 @@ export class LLMService {
     }
 
     if (endpoint) {
-      common.apiUrl = endpoint.apiUrl.trim();
-      common.apiKey = endpoint.apiKey.trim();
+      const isClaudeCli = endpoint.providerType === "claude-code-cli";
+      common.apiUrl = isClaudeCli ? "" : endpoint.apiUrl.trim();
+      common.apiKey = isClaudeCli ? "" : endpoint.apiKey.trim();
       common.model = endpoint.model.trim();
+      if (endpoint.codingPlanVendor) {
+        common.codingPlanVendor = endpoint.codingPlanVendor;
+      }
+      if (endpoint.codingPlanProfile) {
+        common.codingPlanProfile = endpoint.codingPlanProfile;
+      }
       if (endpoint.providerType === "codex-app-server") {
         common.role = endpoint.codexRole;
         common.codexBinaryPath = endpoint.codexBinaryPath;
@@ -581,6 +611,24 @@ export class LLMService {
         common.networkAccess = endpoint.networkAccess;
         common.mcpEnabled = endpoint.mcpEnabled;
       }
+      if (endpoint.providerType === "claude-code-cli") {
+        common.claudeBinaryPath = endpoint.claudeBinaryPath;
+        common.claudePermissionMode = endpoint.claudePermissionMode;
+        common.claudeRestricted = endpoint.claudeRestricted;
+        common.claudeOutputFormat = endpoint.claudeOutputFormat;
+      }
+    } else if (id === "claude-code-cli") {
+      common.apiUrl = "";
+      common.apiKey = "";
+      common.model = (getPref("claudeModel" as any) || "sonnet").trim();
+      common.codingPlanVendor = "claude-code-cli";
+      common.codingPlanProfile = "claude-code-cli";
+      common.claudeBinaryPath = String(
+        getPref("claudeBinaryPath" as any) || "",
+      ).trim();
+      common.claudePermissionMode = "plan";
+      common.claudeRestricted = getPref("claudeRestricted" as any) !== false;
+      common.claudeOutputFormat = "stream-json";
     } else if (id.includes("gemini") || id === "google") {
       const keyManagerId = this.mapToKeyManagerId(id);
       common.apiUrl = (
@@ -906,6 +954,7 @@ export class LLMService {
   }
 
   static endpointSupportsPdfBase64(endpoint: LLMEndpoint): boolean {
+    if (endpointDisallowsPdfBase64(endpoint)) return false;
     const provider = this.getProviderForEndpoint(endpoint);
     return this.getProviderCapabilities(provider).supportsPdfBase64;
   }
@@ -1229,7 +1278,7 @@ export class LLMService {
     prompt: string,
     attempt = 0,
   ): Promise<LLMResponse> {
-    assertCodexInputAllowed(endpoint, request.content);
+    assertEndpointInputAllowed(endpoint, request.content);
     const { options, context } = this.buildAttemptOptions(
       endpoint,
       request.generation,
@@ -1505,7 +1554,7 @@ export class LLMService {
     request: LLMChatRequest,
     attempt = 0,
   ): Promise<LLMResponse> {
-    assertCodexInputAllowed(endpoint, request.content);
+    assertEndpointInputAllowed(endpoint, request.content);
     const { options, context } = this.buildAttemptOptions(
       endpoint,
       request.generation,
@@ -1837,9 +1886,10 @@ export class LLMService {
       meta?: TaskProgressMeta,
     ) => void,
   ): Promise<ResolvedContent> {
+    if (endpoint) assertEndpointInputAllowed(endpoint, input);
     if (input.kind === "text") {
       if (
-        endpoint?.providerType === "codex-app-server" &&
+        endpointDisallowsPdfBase64(endpoint) &&
         input.policy === "pdf-base64"
       ) {
         throw new Error(getString("endpoint-pdf-unsupported"));
@@ -1849,7 +1899,7 @@ export class LLMService {
 
     if (input.kind === "legacy") {
       if (
-        endpoint?.providerType === "codex-app-server" &&
+        endpointDisallowsPdfBase64(endpoint) &&
         (input.isBase64 || input.policy === "pdf-base64")
       ) {
         throw new Error(getString("endpoint-pdf-unsupported"));
@@ -1917,7 +1967,7 @@ export class LLMService {
     )
       .trim()
       .toLowerCase();
-    if (endpoint?.providerType === "codex-app-server") {
+    if (endpointDisallowsPdfBase64(endpoint)) {
       if (rawMode === "pdf-base64") {
         throw new Error(getString("endpoint-pdf-unsupported"));
       }
