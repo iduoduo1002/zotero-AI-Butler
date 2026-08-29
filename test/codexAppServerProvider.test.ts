@@ -540,6 +540,45 @@ describe("Codex app-server provider", function () {
     }
   });
 
+  it("adds verified macOS Node directories while preserving the inherited PATH", async function () {
+    let callOptions: Record<string, unknown> | undefined;
+    const originalChromeUtils = (globalThis as any).ChromeUtils;
+    const originalNavigator = (globalThis as any).navigator;
+    const originalServices = (globalThis as any).Services;
+    Object.defineProperty(globalThis, "navigator", {
+      configurable: true,
+      value: { platform: "MacIntel" },
+    });
+    (globalThis as any).Services = { env: { get: () => "/gui/bin" } };
+    (globalThis as any).ChromeUtils = {
+      importESModule: () => ({
+        Subprocess: {
+          pathSearch: async () => "/Users/alater/.npm-global/bin/codex",
+          call: async (options: Record<string, unknown>) => {
+            callOptions = options;
+            return { stdin: { write: () => {} }, kill: () => {} };
+          },
+        },
+      }),
+    };
+
+    try {
+      const process = await CodexAppServerProcess.spawn();
+      const environment = callOptions?.environment as { PATH: string };
+      expect(environment.PATH).to.equal(
+        "/usr/local/bin:/opt/homebrew/bin:/gui/bin",
+      );
+      process.kill();
+    } finally {
+      (globalThis as any).ChromeUtils = originalChromeUtils;
+      (globalThis as any).Services = originalServices;
+      Object.defineProperty(globalThis, "navigator", {
+        configurable: true,
+        value: originalNavigator,
+      });
+    }
+  });
+
   it("fails closed when Zotero path search cannot resolve Codex", async function () {
     const originalChromeUtils = (globalThis as any).ChromeUtils;
     (globalThis as any).ChromeUtils = {

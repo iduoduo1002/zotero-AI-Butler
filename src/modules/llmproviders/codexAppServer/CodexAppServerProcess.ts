@@ -17,6 +17,7 @@ type SubprocessModule = {
     command: string;
     arguments: string[];
     stderr: "pipe";
+    environment?: Record<string, string>;
   }): unknown | Promise<unknown>;
   pathSearch?: (
     command: string,
@@ -26,6 +27,7 @@ type SubprocessModule = {
 
 const MAX_DIAGNOSTIC_LENGTH = 4000;
 const STDERR_DRAIN_WAIT_MS = 100;
+const MACOS_NODE_PATHS = ["/usr/local/bin", "/opt/homebrew/bin"];
 
 function codexError(fallback: string): string {
   try {
@@ -111,17 +113,49 @@ export class CodexAppServerProcess implements CodexAppServerProcessLike {
   ): Promise<CodexAppServerProcess> {
     const subprocess = await this.loadSubprocessModule();
     const command = await this.resolveExecutablePath(subprocess, options);
+    const environment = this.macosNodeEnvironment();
     const raw = await subprocess.call({
       command,
       // stdio JSONL is the app-server default; keeping the invocation to the
       // stable subcommand also works with older Codex CLI releases.
       arguments: ["app-server"],
       stderr: "pipe",
+      ...(environment ? { environment } : {}),
     });
     if (!raw) {
       throw new Error(codexError("codex-subprocess-not-started"));
     }
     return new CodexAppServerProcess(raw);
+  }
+
+  private static macosNodeEnvironment(): Record<string, string> | undefined {
+    const services = (globalThis as any).Services;
+    const platform = (globalThis as any).navigator?.platform;
+    const isMacOS =
+      services?.appinfo?.OS === "Darwin" ||
+      platform === "MacIntel" ||
+      platform === "MacPPC" ||
+      platform === "Mac68K";
+    if (!isMacOS) return undefined;
+
+    let inheritedPath = "";
+    try {
+      inheritedPath = String(services?.env?.get?.("PATH") || "");
+    } catch {
+      inheritedPath = "";
+    }
+    if (!inheritedPath) {
+      try {
+        inheritedPath = String((globalThis as any).process?.env?.PATH || "");
+      } catch {
+        inheritedPath = "";
+      }
+    }
+    const pathEntries = inheritedPath.split(":").filter(Boolean);
+    const path = [...MACOS_NODE_PATHS, ...pathEntries].filter(
+      (entry, index, entries) => entries.indexOf(entry) === index,
+    );
+    return { PATH: path.join(":") };
   }
 
   /** Stop every task-scoped Codex process during plugin shutdown. */
