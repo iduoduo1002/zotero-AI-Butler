@@ -114,6 +114,114 @@ describe("LLMEndpointManager", function () {
     });
   });
 
+  it("enumerates the Claude Code CLI endpoint provider", function () {
+    expect(LLMEndpointManager.providerTypes()).to.include("claude-code-cli");
+  });
+
+  it("preserves legacy endpoints without Coding Plan metadata", function () {
+    const legacy = makeEndpoint("legacy-json");
+    Zotero.Prefs.set(prefName("llmEndpoints"), JSON.stringify([legacy]), true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include(legacy);
+    expect(endpoint).to.not.have.property("codingPlanVendor");
+    expect(endpoint).to.not.have.property("codingPlanProfile");
+  });
+
+  it("normalizes and persists Kimi and GLM Coding Plan profile metadata", function () {
+    LLMEndpointManager.saveEndpoints([
+      {
+        ...makeEndpoint("kimi"),
+        providerType: "openai-compat",
+        apiUrl: "",
+        apiKey: "kimi-key",
+        model: "",
+        codingPlanVendor: "kimi-code" as any,
+        codingPlanProfile: "kimi-code",
+      } as any,
+      {
+        ...makeEndpoint("glm"),
+        providerType: "openai-compat",
+        apiUrl: "https://custom.example/glm",
+        apiKey: "glm-key",
+        model: "custom-glm",
+        codingPlanVendor: "zhipu-glm-coding" as any,
+        codingPlanProfile: "zhipu-glm-coding",
+      } as any,
+    ]);
+
+    const endpoints = LLMEndpointManager.getEndpoints();
+
+    expect(endpoints[0]).to.include({
+      providerType: "openai-compat",
+      codingPlanVendor: "kimi-code",
+      codingPlanProfile: "kimi-code",
+      apiUrl: "https://api.kimi.com/coding/v1/chat/completions",
+      apiKey: "kimi-key",
+      model: "kimi-for-coding",
+    });
+    expect(endpoints[1]).to.include({
+      providerType: "openai-compat",
+      codingPlanVendor: "zhipu-glm-coding",
+      codingPlanProfile: "zhipu-glm-coding",
+      apiUrl: "https://custom.example/glm",
+      apiKey: "glm-key",
+      model: "custom-glm",
+    });
+  });
+
+  it("migrates a legacy Kimi provider selection to its profile defaults", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "kimi-code", true);
+    Zotero.Prefs.set(prefName("openaiCompatApiKey"), "kimi-key", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include({
+      providerType: "openai-compat",
+      codingPlanVendor: "kimi-code",
+      codingPlanProfile: "kimi-code",
+      apiUrl: "https://api.kimi.com/coding/v1/chat/completions",
+      apiKey: "kimi-key",
+      model: "kimi-for-coding",
+    });
+  });
+
+  it("validates Coding Plan API keys and Claude CLI executable settings", function () {
+    const kimi = {
+      ...LLMEndpointManager.createEndpoint("openai-compat"),
+      codingPlanVendor: "kimi-code" as any,
+      codingPlanProfile: "kimi-code",
+      apiUrl: "https://api.kimi.com/coding/v1/chat/completions",
+      apiKey: "",
+      model: "kimi-for-coding",
+    } as any;
+    const glm = {
+      ...LLMEndpointManager.createEndpoint("openai-compat"),
+      codingPlanVendor: "zhipu-glm-coding" as any,
+      codingPlanProfile: "zhipu-glm-coding",
+      apiUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+      apiKey: "",
+      model: "glm-5.3",
+    } as any;
+    const claude = {
+      ...LLMEndpointManager.createEndpoint("claude-code-cli" as any),
+      providerType: "claude-code-cli",
+      apiUrl: "",
+      apiKey: "",
+      model: "sonnet",
+      claudeBinaryPath: "/usr/local/bin/claude",
+    } as any;
+
+    expect(LLMEndpointManager.isEndpointUsable(kimi)).to.equal(false);
+    expect(LLMEndpointManager.isEndpointUsable(glm)).to.equal(false);
+    expect(LLMEndpointManager.validateEndpoint(kimi)).to.include("apiKey");
+    expect(LLMEndpointManager.validateEndpoint(glm)).to.include("apiKey");
+    expect(LLMEndpointManager.isEndpointUsable(claude)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(claude)).to.deep.equal([]);
+  });
+
   it("normalizes a Codex Luna endpoint to the Luna defaults", function () {
     LLMEndpointManager.saveEndpoints([
       {

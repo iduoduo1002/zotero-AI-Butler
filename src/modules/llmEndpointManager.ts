@@ -2,6 +2,11 @@ import { getString } from "../utils/locale";
 import { getPref, setPref } from "../utils/prefs";
 import { config } from "../../package.json";
 import type { ProviderId } from "./apiKeyManager";
+import {
+  getCodingPlanProfile,
+  type CodingPlanProfile,
+  type CodingPlanVendor,
+} from "./codingPlanProfiles";
 import { normalizeReasoningEffortSetting } from "./llmproviders/shared/reasoning";
 import type { LLMReasoningEffortSetting } from "./llmproviders/types";
 
@@ -14,6 +19,8 @@ export type LLMCodexApprovalPolicy = "untrusted" | "on-request" | "never";
 export type LLMCodexSandboxPolicy =
   "read-only" | "workspace-write" | "danger-full-access";
 export type LLMEndpointReasoningEffort = LLMReasoningEffortSetting | "max";
+export type LLMClaudePermissionMode = "plan";
+export type LLMClaudeOutputFormat = "stream-json";
 
 export interface LLMEndpoint {
   id: string;
@@ -29,6 +36,12 @@ export interface LLMEndpoint {
   sandboxPolicy?: LLMCodexSandboxPolicy | Record<string, unknown>;
   networkAccess?: boolean;
   mcpEnabled?: boolean;
+  codingPlanVendor?: CodingPlanVendor;
+  codingPlanProfile?: string;
+  claudeBinaryPath?: string;
+  claudePermissionMode?: LLMClaudePermissionMode;
+  claudeRestricted?: boolean;
+  claudeOutputFormat?: LLMClaudeOutputFormat;
   pdfProcessMode?: LLMEndpointPdfProcessMode;
   enabled: boolean;
   createdAt: string;
@@ -49,7 +62,7 @@ export interface ProviderDefaults {
 }
 
 type ProviderDefaultsConfig = Omit<ProviderDefaults, "label"> & {
-  labelKey: string;
+  labelKey?: string;
 };
 
 const PROVIDER_DEFAULTS: Record<
@@ -103,6 +116,11 @@ const PROVIDER_DEFAULTS: Record<
     apiUrl: "",
     model: "gpt-5.6-sol",
     reasoningEffort: "high",
+  },
+  "claude-code-cli": {
+    apiUrl: "",
+    model: "sonnet",
+    reasoningEffort: "default",
   },
 };
 
@@ -159,8 +177,12 @@ function makeEndpointId(): string {
 function safeProviderType(raw: unknown): LLMEndpointProviderType {
   const value = String(raw || "").toLowerCase();
   if (value.includes("gemini")) return "google";
+  if (value === "claude-code-cli") return "claude-code-cli";
   if (value.includes("claude")) return "anthropic";
   if (value.includes("ollama")) return "ollama";
+  if (value === "kimi-code" || value === "zhipu-glm-coding") {
+    return "openai-compat";
+  }
   if (PROVIDER_TYPES.includes(value as LLMEndpointProviderType)) {
     return value as LLMEndpointProviderType;
   }
@@ -249,6 +271,53 @@ function normalizeCodexPdfProcessMode(
   return "text";
 }
 
+function normalizeCodingPlanPdfProcessMode(
+  raw: unknown,
+  profile?: CodingPlanProfile,
+): LLMEndpointPdfProcessMode {
+  const mode = normalizeEndpointPdfProcessMode(raw);
+  if (!profile || profile.supportsPdfBase64) return mode;
+  return mode === "mineru" || mode === "text" ? mode : "text";
+}
+
+function normalizeClaudePermissionMode(raw: unknown): LLMClaudePermissionMode {
+  return String(raw || "")
+    .trim()
+    .toLowerCase() === "plan"
+    ? "plan"
+    : "plan";
+}
+
+function normalizeClaudeOutputFormat(raw: unknown): LLMClaudeOutputFormat {
+  return String(raw || "")
+    .trim()
+    .toLowerCase() === "stream-json"
+    ? "stream-json"
+    : "stream-json";
+}
+
+function endpointCodingPlanProfile(
+  raw: Partial<LLMEndpoint>,
+  providerType: LLMEndpointProviderType,
+): CodingPlanProfile | undefined {
+  const requestedProfile = String(raw.codingPlanProfile || "").trim();
+  const requestedVendor = String(raw.codingPlanVendor || "").trim();
+  const providerAlias = String(raw.providerType || "").trim();
+  const requestedId =
+    requestedProfile ||
+    requestedVendor ||
+    providerAlias ||
+    (providerType === "claude-code-cli" ? providerType : "");
+  if (!requestedId) return undefined;
+
+  const profile = getCodingPlanProfile(requestedId);
+  if (!profile) return undefined;
+  if (requestedVendor && requestedVendor.toLowerCase() !== profile.id) {
+    return undefined;
+  }
+  return profile;
+}
+
 function parseJsonArray(raw: unknown): unknown[] {
   if (typeof raw !== "string" || !raw.trim()) return [];
   try {
@@ -263,8 +332,15 @@ function normalizeEndpoint(
   raw: Partial<LLMEndpoint>,
   fallbackIndex: number,
 ): LLMEndpoint {
-  const providerType = safeProviderType(raw.providerType);
+  let providerType = safeProviderType(raw.providerType);
+  const codingPlanProfile = endpointCodingPlanProfile(raw, providerType);
+  if (codingPlanProfile?.id === "claude-code-cli") {
+    providerType = "claude-code-cli";
+  } else if (codingPlanProfile) {
+    providerType = "openai-compat";
+  }
   const codex = providerType === "codex-app-server";
+  const claude = providerType === "claude-code-cli";
   const codexRole = codex ? normalizeCodexRole(raw.codexRole) : undefined;
   const defaults = providerDefaults(providerType);
   const roleDefaults = codex ? CODEX_ROLE_DEFAULTS[codexRole!] : undefined;
@@ -281,16 +357,31 @@ function normalizeEndpoint(
       );
   const endpointPdfProcessMode = codex
     ? normalizeCodexPdfProcessMode(raw.pdfProcessMode)
-    : normalizeEndpointPdfProcessMode(raw.pdfProcessMode);
+    : normalizeCodingPlanPdfProcessMode(raw.pdfProcessMode, codingPlanProfile);
   return {
     id: String(raw.id || "").trim() || makeEndpointId(),
     name:
       String(raw.name || "").trim() || `${defaults.label} ${fallbackIndex + 1}`,
     providerType,
-    apiUrl: codex ? "" : String(raw.apiUrl || defaults.apiUrl).trim(),
-    apiKey: codex ? "" : String(raw.apiKey || "").trim(),
-    model: model || roleDefaults?.model || defaults.model,
+    apiUrl:
+      codex || claude
+        ? ""
+        : String(
+            raw.apiUrl || codingPlanProfile?.defaultApiUrl || defaults.apiUrl,
+          ).trim(),
+    apiKey: codex || claude ? "" : String(raw.apiKey || "").trim(),
+    model:
+      model ||
+      codingPlanProfile?.defaultModel ||
+      roleDefaults?.model ||
+      defaults.model,
     reasoningEffort,
+    ...(codingPlanProfile
+      ? {
+          codingPlanVendor: codingPlanProfile.id,
+          codingPlanProfile: codingPlanProfile.id,
+        }
+      : {}),
     ...(codex
       ? {
           codexRole,
@@ -299,6 +390,21 @@ function normalizeEndpoint(
           sandboxPolicy: normalizeCodexSandboxPolicy(raw.sandboxPolicy),
           networkAccess: raw.networkAccess === true,
           mcpEnabled: raw.mcpEnabled === true,
+        }
+      : {}),
+    ...(claude
+      ? {
+          claudeBinaryPath: String(
+            raw.claudeBinaryPath ?? getPref("claudeBinaryPath" as any) ?? "",
+          ).trim(),
+          claudePermissionMode: normalizeClaudePermissionMode(
+            raw.claudePermissionMode ?? getPref("claudePermissionMode" as any),
+          ),
+          claudeRestricted:
+            raw.claudeRestricted ?? getPref("claudeRestricted" as any) ?? true,
+          claudeOutputFormat: normalizeClaudeOutputFormat(
+            raw.claudeOutputFormat ?? getPref("claudeOutputFormat" as any),
+          ),
         }
       : {}),
     pdfProcessMode: endpointPdfProcessMode,
@@ -315,7 +421,9 @@ function providerDefaults(
     PROVIDER_DEFAULTS[providerType] || PROVIDER_DEFAULTS.openai;
   return {
     ...defaults,
-    label: getString(labelKey),
+    label:
+      getCodingPlanProfile(providerType)?.label ||
+      getString(labelKey || "llm-endpoint-provider-openai"),
   };
 }
 
@@ -357,14 +465,29 @@ export class LLMEndpointManager {
 
   static providerAllowsEmptyApiKey(providerType: string): boolean {
     const normalized = safeProviderType(providerType);
-    return normalized === "ollama" || normalized === "codex-app-server";
+    return (
+      normalized === "ollama" ||
+      normalized === "codex-app-server" ||
+      normalized === "claude-code-cli"
+    );
   }
 
   static isEndpointUsable(
-    endpoint: Pick<LLMEndpoint, "apiUrl" | "apiKey" | "model" | "providerType">,
+    endpoint: Pick<
+      LLMEndpoint,
+      "apiUrl" | "apiKey" | "model" | "providerType"
+    > &
+      Partial<Pick<LLMEndpoint, "claudeBinaryPath">>,
   ): boolean {
-    if (safeProviderType(endpoint.providerType) === "codex-app-server") {
+    const normalizedProvider = safeProviderType(endpoint.providerType);
+    if (normalizedProvider === "codex-app-server") {
       return endpoint.model.trim().length > 0;
+    }
+    if (normalizedProvider === "claude-code-cli") {
+      return (
+        endpoint.model.trim().length > 0 &&
+        Boolean(endpoint.claudeBinaryPath?.trim())
+      );
     }
     return (
       endpoint.apiUrl.trim().length > 0 &&
@@ -389,6 +512,14 @@ export class LLMEndpointManager {
       | null,
   ): LLMPdfProcessMode {
     if (endpoint?.providerType === "codex-app-server") return "text";
+    const profile = endpointCodingPlanProfile(
+      endpoint || {},
+      safeProviderType(endpoint?.providerType),
+    );
+    if (profile && !profile.supportsPdfBase64) {
+      const mode = normalizeEndpointPdfProcessMode(endpoint?.pdfProcessMode);
+      return mode === "mineru" || mode === "text" ? mode : "text";
+    }
     const endpointMode = normalizeEndpointPdfProcessMode(
       endpoint?.pdfProcessMode,
     );
@@ -418,15 +549,34 @@ export class LLMEndpointManager {
     const normalizedRole = normalizeCodexRole(codexRole);
     const defaults = this.providerDefaults(normalizedProvider, normalizedRole);
     const codex = normalizedProvider === "codex-app-server";
+    const claude = normalizedProvider === "claude-code-cli";
+    const codingPlanProfile =
+      getCodingPlanProfile(providerType) ||
+      (claude ? getCodingPlanProfile("claude-code-cli") : undefined);
+    const endpointProvider = codingPlanProfile
+      ? codingPlanProfile.id === "claude-code-cli"
+        ? "claude-code-cli"
+        : "openai-compat"
+      : normalizedProvider;
+    const endpointIsClaude = endpointProvider === "claude-code-cli";
     const timestamp = nowIso();
     return {
       id: makeEndpointId(),
-      name: defaults.label,
-      providerType: normalizedProvider,
-      apiUrl: defaults.apiUrl,
+      name: codingPlanProfile?.label || defaults.label,
+      providerType: endpointProvider,
+      apiUrl:
+        codex || endpointIsClaude
+          ? ""
+          : codingPlanProfile?.defaultApiUrl || defaults.apiUrl,
       apiKey: "",
-      model: defaults.model,
+      model: codingPlanProfile?.defaultModel || defaults.model,
       reasoningEffort: defaults.reasoningEffort || "default",
+      ...(codingPlanProfile
+        ? {
+            codingPlanVendor: codingPlanProfile.id,
+            codingPlanProfile: codingPlanProfile.id,
+          }
+        : {}),
       ...(codex
         ? {
             codexRole: normalizedRole,
@@ -437,7 +587,26 @@ export class LLMEndpointManager {
             mcpEnabled: CODEX_DEFAULT_MCP_ENABLED,
           }
         : {}),
-      pdfProcessMode: codex ? "text" : "global",
+      ...(claude
+        ? {
+            claudeBinaryPath: String(
+              getPref("claudeBinaryPath" as any) || "",
+            ).trim(),
+            claudePermissionMode: normalizeClaudePermissionMode(
+              getPref("claudePermissionMode" as any),
+            ),
+            claudeRestricted: getPref("claudeRestricted" as any) !== false,
+            claudeOutputFormat: normalizeClaudeOutputFormat(
+              getPref("claudeOutputFormat" as any),
+            ),
+          }
+        : {}),
+      pdfProcessMode:
+        codex || endpointIsClaude
+          ? "text"
+          : codingPlanProfile
+            ? "text"
+            : "global",
       enabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -598,11 +767,18 @@ export class LLMEndpointManager {
   static validateEndpoint(endpoint: LLMEndpoint): string[] {
     const missing: string[] = [];
     if (!endpoint.name.trim()) missing.push("name");
-    const isCodex =
-      safeProviderType(endpoint.providerType) === "codex-app-server";
-    if (!isCodex && !endpoint.apiUrl.trim()) missing.push("apiUrl");
+    const normalizedProvider = safeProviderType(endpoint.providerType);
+    const isCodex = normalizedProvider === "codex-app-server";
+    const isClaude = normalizedProvider === "claude-code-cli";
+    if (!isCodex && !isClaude && !endpoint.apiUrl.trim()) {
+      missing.push("apiUrl");
+    }
+    if (isClaude && !endpoint.claudeBinaryPath?.trim()) {
+      missing.push("claudeBinaryPath");
+    }
     if (
       !isCodex &&
+      !isClaude &&
       !this.providerAllowsEmptyApiKey(endpoint.providerType) &&
       !endpoint.apiKey.trim()
     ) {
@@ -672,9 +848,17 @@ export class LLMEndpointManager {
   }
 
   private static createLegacyEndpoint(): LLMEndpoint {
-    const providerType = safeProviderType(
+    const configuredProvider = String(
       getPref("provider") || "openai-compat",
-    );
+    ).trim();
+    const configuredProfile = getCodingPlanProfile(configuredProvider);
+    const providerType = configuredProfile
+      ? configuredProfile.id === "claude-code-cli"
+        ? "claude-code-cli"
+        : "openai-compat"
+      : safeProviderType(configuredProvider);
+    const codingPlanProfile =
+      configuredProfile || getCodingPlanProfile(providerType);
     const defaults = this.providerDefaults(providerType);
     const timestamp = nowIso();
     const codex = providerType === "codex-app-server";
@@ -685,14 +869,28 @@ export class LLMEndpointManager {
       id: LEGACY_PRIMARY_ENDPOINT_ID,
       name: defaults.label,
       providerType,
-      apiUrl: codex
-        ? ""
-        : this.getLegacyApiUrl(providerType) || defaults.apiUrl,
-      apiKey: codex ? "" : this.getLegacyApiKey(providerType),
+      apiUrl:
+        codex || providerType === "claude-code-cli"
+          ? ""
+          : this.getLegacyApiUrl(providerType) ||
+            codingPlanProfile?.defaultApiUrl ||
+            defaults.apiUrl,
+      apiKey:
+        codex || providerType === "claude-code-cli"
+          ? ""
+          : this.getLegacyApiKey(providerType),
       model:
         this.getLegacyModel(providerType) ||
-        (codex ? CODEX_ROLE_DEFAULTS[codexRole!].model : defaults.model),
+        (codex
+          ? CODEX_ROLE_DEFAULTS[codexRole!].model
+          : codingPlanProfile?.defaultModel || defaults.model),
       reasoningEffort: this.getLegacyReasoningEffort(providerType, codexRole),
+      ...(codingPlanProfile
+        ? {
+            codingPlanVendor: codingPlanProfile.id,
+            codingPlanProfile: codingPlanProfile.id,
+          }
+        : {}),
       ...(codex
         ? {
             codexRole,
@@ -709,7 +907,22 @@ export class LLMEndpointManager {
             mcpEnabled: getPref("codexMcpEnabled" as any) === true,
           }
         : {}),
-      pdfProcessMode: codex ? "text" : "global",
+      ...(providerType === "claude-code-cli"
+        ? {
+            claudeBinaryPath: String(
+              getPref("claudeBinaryPath" as any) || "",
+            ).trim(),
+            claudePermissionMode: normalizeClaudePermissionMode(
+              getPref("claudePermissionMode" as any),
+            ),
+            claudeRestricted: getPref("claudeRestricted" as any) !== false,
+            claudeOutputFormat: normalizeClaudeOutputFormat(
+              getPref("claudeOutputFormat" as any),
+            ),
+          }
+        : {}),
+      pdfProcessMode:
+        codex || providerType === "claude-code-cli" ? "text" : "global",
       enabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -728,6 +941,7 @@ export class LLMEndpointManager {
       volcanoark: "volcanoArkApiUrl",
       ollama: "ollamaApiUrl",
       "codex-app-server": "codexApiUrl",
+      "claude-code-cli": "claudeApiUrl",
     };
     return String(getPref(keyByProvider[providerType] as any) || "").trim();
   }
@@ -744,6 +958,7 @@ export class LLMEndpointManager {
       volcanoark: "volcanoArkApiKey",
       ollama: "ollamaApiKey",
       "codex-app-server": "codexApiKey",
+      "claude-code-cli": "claudeApiKey",
     };
     const value = String(getPref(keyByProvider[providerType] as any) || "");
     if (providerType === "openai-compat" && !value.trim()) {
@@ -762,6 +977,7 @@ export class LLMEndpointManager {
       volcanoark: "volcanoArkModel",
       ollama: "ollamaModel",
       "codex-app-server": "codexModel",
+      "claude-code-cli": "claudeModel",
     };
     const value = String(
       (providerType === "codex-app-server"
@@ -806,6 +1022,12 @@ export class LLMEndpointManager {
         JSON.stringify(a.sandboxPolicy) === JSON.stringify(b.sandboxPolicy) &&
         a.networkAccess === b.networkAccess &&
         a.mcpEnabled === b.mcpEnabled);
+    const claudeFieldsEqual =
+      a.providerType !== "claude-code-cli" ||
+      (a.claudeBinaryPath === b.claudeBinaryPath &&
+        a.claudePermissionMode === b.claudePermissionMode &&
+        a.claudeRestricted === b.claudeRestricted &&
+        a.claudeOutputFormat === b.claudeOutputFormat);
     return (
       a.id === b.id &&
       a.name === b.name &&
@@ -814,9 +1036,12 @@ export class LLMEndpointManager {
       a.apiKey === b.apiKey &&
       a.model === b.model &&
       a.reasoningEffort === b.reasoningEffort &&
+      a.codingPlanVendor === b.codingPlanVendor &&
+      a.codingPlanProfile === b.codingPlanProfile &&
       (a.pdfProcessMode || "global") === (b.pdfProcessMode || "global") &&
       a.enabled === b.enabled &&
-      codexFieldsEqual
+      codexFieldsEqual &&
+      claudeFieldsEqual
     );
   }
 }

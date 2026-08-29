@@ -37,6 +37,11 @@ declare namespace _ZoteroTypes {
       "codexSandboxPolicy": string;
       "codexNetworkAccess": boolean;
       "codexMcpEnabled": boolean;
+      "claudeModel": string;
+      "claudeBinaryPath": string;
+      "claudePermissionMode": string;
+      "claudeRestricted": boolean;
+      "claudeOutputFormat": string;
       "llmEndpoints": string;
       "llmRoutingStrategy": string;
       "llmRoundRobinCursor": string;

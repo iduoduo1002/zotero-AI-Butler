@@ -22,7 +22,9 @@ export type ProviderId =
   | "openrouter"
   | "volcanoark"
   | "ollama"
-  | "codex-app-server";
+  | "codex-app-server"
+  /** Claude Code authenticates through its local CLI session, not API keys. */
+  | "claude-code-cli";
 
 /**
  * 提供商密钥配置映射

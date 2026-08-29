@@ -50,6 +50,13 @@ pref("__prefsPrefix__.codexApprovalPolicy", "on-request");
 pref("__prefsPrefix__.codexSandboxPolicy", "read-only");
 pref("__prefsPrefix__.codexNetworkAccess", false);
 pref("__prefsPrefix__.codexMcpEnabled", false);
+// Claude Code CLI endpoint defaults. Claude authenticates through its local
+// session; API URL and API key preferences are intentionally not defined.
+pref("__prefsPrefix__.claudeModel", "sonnet");
+pref("__prefsPrefix__.claudeBinaryPath", "");
+pref("__prefsPrefix__.claudePermissionMode", "plan");
+pref("__prefsPrefix__.claudeRestricted", true);
+pref("__prefsPrefix__.claudeOutputFormat", "stream-json");
 pref("__prefsPrefix__.llmEndpoints", "[]");
 pref("__prefsPrefix__.llmRoutingStrategy", "priority");
 pref("__prefsPrefix__.llmRoundRobinCursor", "");

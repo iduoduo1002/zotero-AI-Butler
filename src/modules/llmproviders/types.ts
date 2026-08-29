@@ -3,6 +3,7 @@ import type {
   CodexEventDiagnostic,
   CodexTurnResult,
 } from "./codexAppServer/types";
+import type { CodingPlanVendor } from "../codingPlanProfiles";
 export type ProgressCb = (chunk: string) => Promise<void> | void;
 
 export type LLMAbortSignal = {
@@ -64,6 +65,14 @@ export type LLMOptions = {
   codexDiagnostics?: CodexEventDiagnostic[];
   codexRequestId?: string;
   codexSourceSha256?: string;
+  /** Optional Coding Plan metadata; absent for legacy endpoints. */
+  codingPlanVendor?: CodingPlanVendor;
+  codingPlanProfile?: string;
+  /** Restricted local Claude Code CLI settings. */
+  claudeBinaryPath?: string;
+  claudePermissionMode?: "plan";
+  claudeRestricted?: boolean;
+  claudeOutputFormat?: "stream-json";
   /** Structured Sol contract injected into native Codex prompts. */
   codexContract?: Record<string, unknown>;
   codexStatus?:
