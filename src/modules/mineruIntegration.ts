@@ -24,6 +24,8 @@ import {
 } from "./mineruMarkdownSaver";
 import JSZip from "jszip";
 import type { PdfExtractionProgressCallback } from "./pdfExtractor";
+import type { LLMAbortSignal } from "./llmproviders/types";
+import { throwIfAborted } from "./llmproviders/shared/requestAbort";
 
 type MineruModelVersion = "pipeline" | "vlm";
 const MINERU_POLL_INTERVAL_MS = 5000;
@@ -74,7 +76,9 @@ export class MineruClient {
   public static async extractMarkdown(
     item: Zotero.Item,
     progressCallback?: PdfExtractionProgressCallback,
+    abortSignal?: LLMAbortSignal,
   ): Promise<string> {
+    throwIfAborted(abortSignal);
     const apiKey = (getPref("mineruApiKey") as string) || "";
     if (!apiKey) {
       throw new Error(getString("mineru-error-api-key-missing"));
@@ -82,6 +86,7 @@ export class MineruClient {
 
     if (MineruMarkdownSaver.isSaveEnabled()) {
       const cachedMarkdown = await MineruMarkdownSaver.readCachedMarkdown(item);
+      throwIfAborted(abortSignal);
       if (cachedMarkdown) {
         ztoolkit.log(
           "[MineruIntegration] Reusing saved MinerU Markdown attachment.",
@@ -97,11 +102,13 @@ export class MineruClient {
 
     // Get PDF file path
     const pdfAttachments = await PDFExtractor.getAllPdfAttachments(item);
+    throwIfAborted(abortSignal);
     if (!pdfAttachments || pdfAttachments.length === 0) {
       throw new Error(getString("mineru-error-no-pdf-attachment"));
     }
     const pdfAttachment = pdfAttachments[0];
     const filePath = await pdfAttachment.getFilePathAsync();
+    throwIfAborted(abortSignal);
     if (!filePath) {
       throw new Error(getString("mineru-error-pdf-path-not-found"));
     }
@@ -117,6 +124,7 @@ export class MineruClient {
 
     // Read PDF binary
     const fileData = await IOUtils.read(filePath);
+    throwIfAborted(abortSignal);
     const modelVersion = getMineruModelVersion();
 
     // Get Batch & Upload URLs
@@ -140,6 +148,7 @@ export class MineruClient {
         model_version: modelVersion,
       }),
     });
+    throwIfAborted(abortSignal);
 
     if (!batchRes.ok) {
       const err = await batchRes.text();
@@ -149,6 +158,7 @@ export class MineruClient {
     }
 
     const batchData = (await batchRes.json()) as any;
+    throwIfAborted(abortSignal);
     let putUrl = "";
     const batchId = batchData?.data?.batch_id;
 
@@ -180,6 +190,7 @@ export class MineruClient {
       method: "PUT",
       body: fileData,
     });
+    throwIfAborted(abortSignal);
 
     if (!putRes.ok) {
       const errText = await putRes.text();
@@ -195,13 +206,21 @@ export class MineruClient {
     ztoolkit.log(
       `[MineruIntegration] Polling for task completion... Batch ID: ${batchId}, timeout: ${timeoutMs}ms`,
     );
-    const result = await this.pollStatusAndDownload(apiKey, batchId, timeoutMs);
+    const result = await this.pollStatusAndDownload(
+      apiKey,
+      batchId,
+      timeoutMs,
+      progressCallback,
+      abortSignal,
+    );
+    throwIfAborted(abortSignal);
     if (MineruMarkdownSaver.isSaveEnabled()) {
       progressCallback?.(getString("progress-mineru-save-cache-message"), 39, {
         stage: "mineru-parsing",
         label: getString("progress-mineru-save-cache"),
         detail: getString("progress-mineru-save-cache-detail"),
       });
+      throwIfAborted(abortSignal);
       await MineruMarkdownSaver.save(item, result.markdown, result.assets);
     }
     progressCallback?.(getString("progress-mineru-complete-message"), 40, {
@@ -219,17 +238,20 @@ export class MineruClient {
     batchId: string,
     timeoutMs: number,
     progressCallback?: PdfExtractionProgressCallback,
+    abortSignal?: LLMAbortSignal,
   ): Promise<MineruExtractedResult> {
     const url = `https://mineru.net/api/v4/extract-results/batch/${batchId}`;
     const startedAt = Date.now();
     let attempt = 0;
 
     while (Date.now() - startedAt < timeoutMs) {
+      throwIfAborted(abortSignal);
       if (attempt > 0) {
         const remainingMs = timeoutMs - (Date.now() - startedAt);
         await Zotero.Promise.delay(
           Math.min(MINERU_POLL_INTERVAL_MS, Math.max(remainingMs, 0)),
         );
+        throwIfAborted(abortSignal);
       }
       attempt += 1;
 
@@ -238,6 +260,7 @@ export class MineruClient {
           Authorization: `Bearer ${apiKey}`,
         },
       });
+      throwIfAborted(abortSignal);
       if (!res.ok) {
         const errText = await res.text();
         throw new Error(
@@ -289,7 +312,11 @@ export class MineruClient {
             detail: getString("progress-mineru-download-ready-detail"),
           },
         );
-        return await this.downloadAndExtractMarkdown(zipUrl, progressCallback);
+        return await this.downloadAndExtractMarkdown(
+          zipUrl,
+          progressCallback,
+          abortSignal,
+        );
       } else if (state === "error") {
         throw new Error(getString("mineru-error-task-failed"));
       }
@@ -304,9 +331,12 @@ export class MineruClient {
   private static async downloadAndExtractMarkdown(
     zipUrl: string,
     progressCallback?: PdfExtractionProgressCallback,
+    abortSignal?: LLMAbortSignal,
   ): Promise<MineruExtractedResult> {
+    throwIfAborted(abortSignal);
     ztoolkit.log(`[MineruIntegration] Downloading zip result from ${zipUrl}`);
     const res = await fetch(zipUrl);
+    throwIfAborted(abortSignal);
     if (!res.ok) {
       throw new Error(
         getString("mineru-error-download-zip-failed", {
@@ -315,6 +345,7 @@ export class MineruClient {
       );
     }
     const arrayBuffer = await res.arrayBuffer();
+    throwIfAborted(abortSignal);
     progressCallback?.(getString("progress-mineru-unzipping-message"), 37, {
       stage: "mineru-parsing",
       label: getString("progress-mineru-unzipping"),
@@ -332,6 +363,7 @@ export class MineruClient {
 
     const zip = new JSZip();
     await zip.loadAsync(arrayBuffer);
+    throwIfAborted(abortSignal);
 
     let mdContent = "";
 
@@ -342,25 +374,32 @@ export class MineruClient {
 
     if (mdFiles.length > 0) {
       mdContent = await mdFiles[0].async("string");
+      throwIfAborted(abortSignal);
     }
 
     if (!mdContent) {
       throw new Error(getString("mineru-error-no-valid-markdown"));
     }
 
-    const assets = await this.extractMarkdownAssets(zip, mdContent);
+    const assets = await this.extractMarkdownAssets(
+      zip,
+      mdContent,
+      abortSignal,
+    );
     return { markdown: mdContent, assets };
   }
 
   private static async extractMarkdownAssets(
     zip: JSZip,
     markdown: string,
+    abortSignal?: LLMAbortSignal,
   ): Promise<MineruMarkdownAsset[]> {
     const referencedPaths = this.extractImagePathsFromMarkdown(markdown);
     if (referencedPaths.size === 0) return [];
 
     const assets: MineruMarkdownAsset[] = [];
     for (const relativePath of referencedPaths) {
+      throwIfAborted(abortSignal);
       const zipFile = this.findZipFileByRelativePath(zip, relativePath);
       if (!zipFile) {
         ztoolkit.log(
@@ -369,6 +408,7 @@ export class MineruClient {
         continue;
       }
       const data = await zipFile.async("uint8array");
+      throwIfAborted(abortSignal);
       assets.push({ relativePath, data });
     }
     return assets;

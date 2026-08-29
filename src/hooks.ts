@@ -65,6 +65,8 @@ import {
   shouldUpdatePrompt,
 } from "./utils/prompts";
 import { maybeOpenOnboardingTutorialOnStartup } from "./modules/onboarding";
+import { CodexAppServerProcess } from "./modules/llmproviders/codexAppServer/CodexAppServerProcess";
+import { ClaudeCodeCliProcess } from "./modules/llmproviders/claudeCodeCli/ClaudeCodeCliProcess";
 
 /**
  * 插件启动钩子函数
@@ -1825,6 +1827,8 @@ async function onMainWindowUnload(win: Window): Promise<void> {
  */
 function onShutdown(): void {
   AutoNoteExportManager.getInstance().stop();
+  CodexAppServerProcess.cleanup();
+  ClaudeCodeCliProcess.cleanup();
 
   // 注销文献库 AI 精读状态列和相关监听
   unregisterLibraryStatusColumn();

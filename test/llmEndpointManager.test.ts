@@ -4,6 +4,12 @@ import {
   LLMEndpointManager,
   type LLMEndpoint,
 } from "../src/modules/llmEndpointManager";
+import LLMService from "../src/modules/llmService";
+import { ProviderRegistry } from "../src/modules/llmproviders/ProviderRegistry";
+import {
+  normalizeReasoningEffortSetting,
+  resolveReasoningEffort,
+} from "../src/modules/llmproviders/shared/reasoning";
 
 const prefKeys = [
   "llmEndpoints",
@@ -36,6 +42,14 @@ const prefKeys = [
   "ollamaApiUrl",
   "ollamaApiKey",
   "ollamaModel",
+  "codexRole",
+  "codexBinaryPath",
+  "codexModel",
+  "codexReasoningEffort",
+  "codexApprovalPolicy",
+  "codexSandboxPolicy",
+  "codexNetworkAccess",
+  "codexMcpEnabled",
 ];
 
 function prefName(key: string): string {
@@ -74,6 +88,388 @@ describe("LLMEndpointManager", function () {
       const value = originals.get(key);
       if (value === undefined) Zotero.Prefs.clear(fullKey, true);
       else Zotero.Prefs.set(fullKey, value as any, true);
+    }
+  });
+
+  it("enumerates Codex App Server and creates safe Sol defaults", function () {
+    expect(LLMEndpointManager.providerTypes()).to.include("codex-app-server");
+
+    const endpoint = LLMEndpointManager.createEndpoint(
+      "codex-app-server" as any,
+    );
+
+    expect(endpoint).to.include({
+      providerType: "codex-app-server",
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      codexRole: "sol",
+      codexBinaryPath: "",
+      approvalPolicy: "on-request",
+      sandboxPolicy: "read-only",
+      networkAccess: false,
+      mcpEnabled: false,
+      pdfProcessMode: "text",
+    });
+  });
+
+  it("enumerates the Claude Code CLI endpoint provider", function () {
+    expect(LLMEndpointManager.providerTypes()).to.include("claude-code-cli");
+  });
+
+  it("preserves legacy endpoints without Coding Plan metadata", function () {
+    const legacy = makeEndpoint("legacy-json");
+    Zotero.Prefs.set(prefName("llmEndpoints"), JSON.stringify([legacy]), true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include(legacy);
+    expect(endpoint).to.not.have.property("codingPlanVendor");
+    expect(endpoint).to.not.have.property("codingPlanProfile");
+  });
+
+  it("normalizes and persists Kimi and GLM Coding Plan profile metadata", function () {
+    LLMEndpointManager.saveEndpoints([
+      {
+        ...makeEndpoint("kimi"),
+        providerType: "openai-compat",
+        apiUrl: "",
+        apiKey: "kimi-key",
+        model: "",
+        codingPlanVendor: "kimi-code" as any,
+        codingPlanProfile: "kimi-code",
+      } as any,
+      {
+        ...makeEndpoint("glm"),
+        providerType: "openai-compat",
+        apiUrl: "https://custom.example/glm",
+        apiKey: "glm-key",
+        model: "custom-glm",
+        codingPlanVendor: "zhipu-glm-coding" as any,
+        codingPlanProfile: "zhipu-glm-coding",
+      } as any,
+    ]);
+
+    const endpoints = LLMEndpointManager.getEndpoints();
+
+    expect(endpoints[0]).to.include({
+      providerType: "openai-compat",
+      codingPlanVendor: "kimi-code",
+      codingPlanProfile: "kimi-code",
+      apiUrl: "https://api.kimi.com/coding/v1/chat/completions",
+      apiKey: "kimi-key",
+      model: "kimi-for-coding",
+    });
+    expect(endpoints[1]).to.include({
+      providerType: "openai-compat",
+      codingPlanVendor: "zhipu-glm-coding",
+      codingPlanProfile: "zhipu-glm-coding",
+      apiUrl: "https://custom.example/glm",
+      apiKey: "glm-key",
+      model: "custom-glm",
+    });
+  });
+
+  it("migrates a legacy Kimi provider selection to its profile defaults", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "kimi-code", true);
+    Zotero.Prefs.set(prefName("openaiCompatApiUrl"), "", true);
+    Zotero.Prefs.set(prefName("openaiCompatApiKey"), "kimi-key", true);
+    Zotero.Prefs.set(prefName("openaiCompatModel"), "", true);
+    Zotero.Prefs.set(prefName("openaiApiModel"), "", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include({
+      providerType: "openai-compat",
+      codingPlanVendor: "kimi-code",
+      codingPlanProfile: "kimi-code",
+      apiUrl: "https://api.kimi.com/coding/v1/chat/completions",
+      apiKey: "kimi-key",
+      model: "kimi-for-coding",
+    });
+  });
+
+  it("validates Coding Plan API keys and Claude CLI executable settings", function () {
+    const kimi = {
+      ...LLMEndpointManager.createEndpoint("openai-compat"),
+      codingPlanVendor: "kimi-code" as any,
+      codingPlanProfile: "kimi-code",
+      apiUrl: "https://api.kimi.com/coding/v1/chat/completions",
+      apiKey: "",
+      model: "kimi-for-coding",
+    } as any;
+    const glm = {
+      ...LLMEndpointManager.createEndpoint("openai-compat"),
+      codingPlanVendor: "zhipu-glm-coding" as any,
+      codingPlanProfile: "zhipu-glm-coding",
+      apiUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+      apiKey: "",
+      model: "glm-5.3",
+    } as any;
+    const claude = {
+      ...LLMEndpointManager.createEndpoint("claude-code-cli" as any),
+      providerType: "claude-code-cli",
+      apiUrl: "",
+      apiKey: "",
+      model: "sonnet",
+      claudeBinaryPath: "/usr/local/bin/claude",
+    } as any;
+
+    expect(LLMEndpointManager.isEndpointUsable(kimi)).to.equal(false);
+    expect(LLMEndpointManager.isEndpointUsable(glm)).to.equal(false);
+    expect(LLMEndpointManager.validateEndpoint(kimi)).to.include("apiKey");
+    expect(LLMEndpointManager.validateEndpoint(glm)).to.include("apiKey");
+    expect(LLMEndpointManager.isEndpointUsable(claude)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(claude)).to.deep.equal([]);
+  });
+
+  it("allows Claude CLI PATH discovery when binary path is blank", function () {
+    const pathDiscovered = {
+      ...LLMEndpointManager.createEndpoint("claude-code-cli" as any),
+      providerType: "claude-code-cli",
+      apiUrl: "",
+      apiKey: "",
+      model: "sonnet",
+      claudeBinaryPath: "",
+    } as any;
+    const explicitPath = {
+      ...pathDiscovered,
+      claudeBinaryPath: "/usr/local/bin/claude",
+    };
+
+    expect(LLMEndpointManager.isEndpointUsable(pathDiscovered)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(pathDiscovered)).to.deep.equal(
+      [],
+    );
+    expect(LLMEndpointManager.isEndpointUsable(explicitPath)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(explicitPath)).to.deep.equal([]);
+  });
+
+  it("normalizes a Codex Luna endpoint to the Luna defaults", function () {
+    LLMEndpointManager.saveEndpoints([
+      {
+        ...makeEndpoint("codex-luna"),
+        providerType: "codex-app-server" as any,
+        apiUrl: "",
+        apiKey: "",
+        model: "",
+        reasoningEffort: "default",
+        codexRole: "luna" as any,
+        pdfProcessMode: undefined,
+      } as any,
+    ]);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include({
+      providerType: "codex-app-server",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "max",
+      codexRole: "luna",
+      pdfProcessMode: "text",
+    });
+  });
+
+  it("allows Codex endpoints without API URL or API key when a model is set", function () {
+    const endpoint = {
+      ...LLMEndpointManager.createEndpoint("codex-app-server" as any),
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-sol",
+    } as any;
+
+    expect(LLMEndpointManager.isEndpointUsable(endpoint)).to.equal(true);
+    expect(LLMEndpointManager.validateEndpoint(endpoint)).to.deep.equal([]);
+  });
+
+  it("falls back to the legacy OpenAI provider for unknown stored provider values", function () {
+    Zotero.Prefs.set(
+      prefName("llmEndpoints"),
+      JSON.stringify([
+        {
+          ...makeEndpoint("unknown-provider"),
+          providerType: "codex-unknown-provider",
+        },
+      ]),
+      true,
+    );
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.providerType).to.equal("openai");
+  });
+
+  it("defaults Codex PDF processing to extracted text", function () {
+    LLMEndpointManager.saveEndpoints([
+      {
+        ...LLMEndpointManager.createEndpoint("codex-app-server" as any),
+        pdfProcessMode: undefined,
+      } as any,
+    ]);
+
+    expect(LLMEndpointManager.getEndpoints()[0].pdfProcessMode).to.equal(
+      "text",
+    );
+  });
+
+  it("migrates legacy Codex preferences without introducing API credentials", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+    Zotero.Prefs.set(
+      prefName("codexBinaryPath"),
+      " /usr/local/bin/codex ",
+      true,
+    );
+    Zotero.Prefs.set(prefName("codexModel"), "", true);
+    Zotero.Prefs.set(prefName("codexNetworkAccess"), true, true);
+    Zotero.Prefs.set(prefName("codexMcpEnabled"), true, true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint).to.include({
+      id: "endpoint-legacy-primary",
+      providerType: "codex-app-server",
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "max",
+      codexRole: "luna",
+      codexBinaryPath: "/usr/local/bin/codex",
+      networkAccess: true,
+      mcpEnabled: true,
+      pdfProcessMode: "text",
+    });
+  });
+
+  it("honors an explicit legacy Codex reasoning override for the Luna role", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+    Zotero.Prefs.set(prefName("codexModel"), "", true);
+    Zotero.Prefs.set(prefName("codexReasoningEffort"), "low", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.codexRole).to.equal("luna");
+    expect(endpoint.reasoningEffort).to.equal("low");
+  });
+
+  it("uses the Codex role model when codexModel is only a shipped default", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.model).to.equal("gpt-5.6-luna");
+    expect(endpoint.reasoningEffort).to.equal("max");
+  });
+
+  it("preserves an explicit legacy Codex model for the selected role", function () {
+    Zotero.Prefs.set(prefName("llmEndpoints"), "[]", true);
+    Zotero.Prefs.set(prefName("provider"), "codex-app-server", true);
+    Zotero.Prefs.set(prefName("codexRole"), "luna", true);
+    Zotero.Prefs.set(prefName("codexModel"), "custom-luna-model", true);
+
+    const [endpoint] = LLMEndpointManager.getEndpoints();
+
+    expect(endpoint.model).to.equal("custom-luna-model");
+    expect(endpoint.reasoningEffort).to.equal("max");
+  });
+
+  it("maps Codex endpoint fields into LLMOptions without dropping Luna max effort", function () {
+    const endpoint = LLMEndpointManager.createEndpoint(
+      "codex-app-server",
+      "luna",
+    );
+    endpoint.codexBinaryPath = "/usr/local/bin/codex";
+    endpoint.approvalPolicy = "never";
+    endpoint.sandboxPolicy = "workspace-write";
+    endpoint.networkAccess = true;
+    endpoint.mcpEnabled = false;
+
+    const options = LLMService.buildOptions(endpoint, undefined, {
+      stream: false,
+    });
+
+    expect(options).to.include({
+      apiUrl: "",
+      apiKey: "",
+      model: "gpt-5.6-luna",
+      reasoningEffort: "max",
+      role: "luna",
+      codexBinaryPath: "/usr/local/bin/codex",
+      approvalPolicy: "never",
+      sandboxPolicy: "workspace-write",
+      networkAccess: true,
+      mcpEnabled: false,
+    });
+  });
+
+  it("keeps Codex outside legacy API-key provider rotation", function () {
+    expect(LLMService.mapToKeyManagerId("codex-app-server")).to.equal(
+      "codex-app-server",
+    );
+  });
+
+  it("passes MCP enabled through the connection path for runtime fail-closed handling", async function () {
+    const endpoint = LLMEndpointManager.createEndpoint(
+      "codex-app-server",
+      "luna",
+    );
+    endpoint.mcpEnabled = true;
+    const provider = ProviderRegistry.get("codex-app-server");
+    expect(provider).to.not.equal(undefined);
+    const originalTestConnection = provider!.testConnection;
+    let capturedOptions: Record<string, unknown> | undefined;
+    provider!.testConnection = async (options) => {
+      capturedOptions = options as unknown as Record<string, unknown>;
+      throw new Error("codex-mcp-reserved");
+    };
+
+    let error: unknown;
+    try {
+      await LLMService.testEndpointConnection(endpoint);
+    } catch (caught) {
+      error = caught;
+    } finally {
+      provider!.testConnection = originalTestConnection;
+    }
+
+    expect((error as Error)?.message).to.equal("codex-mcp-reserved");
+    expect(capturedOptions).to.include({
+      role: "luna",
+      reasoningEffort: "max",
+      mcpEnabled: true,
+    });
+  });
+
+  it("gates max reasoning to Codex while preserving legacy normalizer defaults", function () {
+    expect(normalizeReasoningEffortSetting("max")).to.equal("default");
+    expect(
+      normalizeReasoningEffortSetting("max", "default", { allowMax: true }),
+    ).to.equal("max");
+    expect(resolveReasoningEffort("max", { allowMax: true })).to.equal("max");
+  });
+
+  it("forces persisted Codex PDF modes to extracted text", function () {
+    for (const mode of ["base64", "global", "mineru", undefined]) {
+      LLMEndpointManager.saveEndpoints([
+        {
+          ...LLMEndpointManager.createEndpoint("codex-app-server"),
+          pdfProcessMode: mode as any,
+        },
+      ]);
+
+      const [endpoint] = LLMEndpointManager.getEndpoints();
+      expect(endpoint.pdfProcessMode, mode).to.equal("text");
+      expect(
+        LLMEndpointManager.getEffectivePdfProcessMode(endpoint),
+        mode,
+      ).to.equal("text");
     }
   });
 

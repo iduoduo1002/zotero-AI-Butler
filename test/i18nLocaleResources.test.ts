@@ -2794,4 +2794,27 @@ describe("i18n getString helper", function () {
       },
     );
   });
+
+  it("loads bilingual Coding Plan provider labels and safety guidance", function () {
+    const requiredKeys = [
+      "llm-endpoint-provider-kimi-code",
+      "llm-endpoint-provider-zhipu-glm-coding",
+      "llm-endpoint-provider-claude-code-cli",
+      "endpoint-coding-plan-http-help",
+      "endpoint-coding-plan-claude-help",
+      "endpoint-coding-plan-pdf-help",
+      "endpoint-coding-plan-mcp-help",
+      "endpoint-claude-binary-path-label",
+      "endpoint-claude-permission-mode-label",
+      "endpoint-claude-restricted-label",
+      "endpoint-claude-output-format-label",
+      "endpoint-claude-login-help",
+      "endpoint-claude-test-help",
+      "settings-api-coding-plan-pdf-note",
+    ];
+
+    for (const key of requiredKeys) {
+      expect(getString(key), `missing locale key: ${key}`).to.not.equal(key);
+    }
+  });
 });

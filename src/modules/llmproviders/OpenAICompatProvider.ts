@@ -1,11 +1,17 @@
 import { ILlmProvider } from "./ILlmProvider";
 import {
+  APITestError,
   ConversationMessage,
   LLMOptions,
   LLMModelInfo,
   LLMProviderCapabilities,
   ProgressCb,
 } from "./types";
+import {
+  getCodingPlanProfile,
+  type CodingPlanProfile,
+} from "../codingPlanProfiles";
+import { getString } from "../../utils/locale";
 import { SYSTEM_ROLE_PROMPT, buildUserMessage } from "../../utils/prompts";
 import { getRequestTimeoutMs, logPromptCacheUsage } from "./shared/llmutils";
 import {
@@ -39,6 +45,168 @@ import {
   providerStreamUnexpectedEnd,
 } from "./shared/localizedErrors";
 
+type CodingPlanErrorKind =
+  | "unauthorized"
+  | "rate-limit"
+  | "unsupported-parameter"
+  | "timeout"
+  | "malformed-response"
+  | "request-failed"
+  | "unsupported-input";
+
+const REDACTED_VALUE = "[REDACTED]";
+const REDACTED_REQUEST_BODY = REDACTED_VALUE;
+
+function getHttpErrorResponse(error: any): {
+  status?: number;
+  responseBody: unknown;
+  responseCode?: string;
+  responseMessage?: string;
+} {
+  const status =
+    typeof error?.xmlhttp?.status === "number"
+      ? error.xmlhttp.status
+      : typeof error?.details?.statusCode === "number"
+        ? error.details.statusCode
+        : undefined;
+  const responseBody =
+    error?.xmlhttp?.response ??
+    error?.xmlhttp?.responseText ??
+    error?.details?.responseBody ??
+    "";
+  let parsed: any;
+  try {
+    parsed =
+      typeof responseBody === "string" && responseBody.trim()
+        ? JSON.parse(responseBody)
+        : responseBody;
+  } catch {
+    parsed = undefined;
+  }
+  const responseError = parsed?.error || parsed;
+  return {
+    status,
+    responseBody,
+    responseCode:
+      typeof responseError?.code === "string"
+        ? responseError.code
+        : typeof responseError?.type === "string"
+          ? responseError.type
+          : typeof error?.details?.errorName === "string"
+            ? error.details.errorName
+            : undefined,
+    responseMessage:
+      typeof responseError?.message === "string"
+        ? responseError.message
+        : typeof error?.details?.errorMessage === "string"
+          ? error.details.errorMessage
+          : undefined,
+  };
+}
+
+function codingPlanProfileForOptions(
+  options: LLMOptions,
+): CodingPlanProfile | undefined {
+  const profile =
+    getCodingPlanProfile(options.codingPlanProfile) ||
+    getCodingPlanProfile(options.codingPlanVendor);
+  return profile?.protocol === "openai-chat" ? profile : undefined;
+}
+
+function redactSensitiveText(value: unknown, apiKey?: string): string {
+  let text =
+    typeof value === "string"
+      ? value
+      : value === undefined || value === null
+        ? ""
+        : JSON.stringify(value);
+  const secret = (apiKey || "").trim();
+  if (secret) text = text.split(secret).join(REDACTED_VALUE);
+  return text
+    .replace(/(bearer\s+)[^\s,;]+/gi, `$1${REDACTED_VALUE}`)
+    .replace(
+      /([?&](?:api[_-]?key|authorization|token|secret|password)=)[^&#\s]+/gi,
+      `$1${REDACTED_VALUE}`,
+    )
+    .replace(
+      /((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*["']?)[^"',\s}&]+/gi,
+      `$1${REDACTED_VALUE}`,
+    );
+}
+
+function redactRequestUrl(url: string, apiKey?: string): string {
+  return redactSensitiveText(url, apiKey);
+}
+
+function redactResponseHeaders(
+  headers: Record<string, string>,
+  apiKey?: string,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    result[name] = /authorization|api[_-]?key|token|cookie|secret/i.test(name)
+      ? REDACTED_VALUE
+      : redactSensitiveText(value, apiKey);
+  }
+  return result;
+}
+
+function inferCodingPlanErrorKind(
+  error: unknown,
+  response: ReturnType<typeof getHttpErrorResponse>,
+  fallback?: CodingPlanErrorKind,
+): CodingPlanErrorKind {
+  const status = response.status;
+  const errorObject = error as any;
+  const message = [
+    errorObject?.message,
+    response.responseCode,
+    response.responseMessage,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    status === 401 ||
+    status === 403 ||
+    /(?:http\s*)?(?:401|403)\b|unauthor|forbidden|api.?key/.test(message)
+  ) {
+    return "unauthorized";
+  }
+  if (
+    status === 429 ||
+    /(?:http\s*)?429\b|rate.?limit|too many request|quota|限流|额度|频率过高/.test(
+      message,
+    )
+  ) {
+    return "rate-limit";
+  }
+  if (
+    /unsupported|not supported|unknown parameter|invalid[_ -]?parameter|unsupported[_ -]?parameter|parameter.{0,20}(?:unsupported|invalid)|不支持|参数错误/.test(
+      message,
+    )
+  ) {
+    return "unsupported-parameter";
+  }
+  if (/timeout|timed out|超时/.test(message)) return "timeout";
+  if (
+    /malformed|parse|invalid[_ -]?json|invalid[_ -]?response|unexpected (?:end|token)|stream.*(?:trunc|missing|unexpected)|解析失败|格式错误|响应格式/.test(
+      message,
+    )
+  ) {
+    return "malformed-response";
+  }
+  return fallback || "request-failed";
+}
+
+function codingPlanErrorCode(
+  profile: CodingPlanProfile,
+  kind: CodingPlanErrorKind,
+): string {
+  return `coding-plan/${profile.id}/${kind}`;
+}
+
 /**
  * OpenAI 旧接口兼容 Provider（Chat Completions 格式）
  *
@@ -66,11 +234,85 @@ export class OpenAICompatProvider implements ILlmProvider {
     ],
   };
 
-  private ensureUrlAndKey(options: LLMOptions) {
-    const rawApiUrl = (
-      options.apiUrl || "https://api.openai.com/v1/chat/completions"
+  private getCodingPlanProfile(
+    options: LLMOptions,
+  ): CodingPlanProfile | undefined {
+    return codingPlanProfileForOptions(options);
+  }
+
+  private getModel(options: LLMOptions): string {
+    const profile = this.getCodingPlanProfile(options);
+    return (
+      options.model?.trim() ||
+      profile?.defaultModel ||
+      "gpt-3.5-turbo"
     ).trim();
-    const apiUrl = this.normalizeChatCompletionsUrl(rawApiUrl);
+  }
+
+  private normalizeCodingPlanError(
+    error: unknown,
+    options: LLMOptions,
+    fallbackKind?: CodingPlanErrorKind,
+  ): Error {
+    const original =
+      error instanceof Error ? error : new Error(String(error || "Error"));
+    const profile = this.getCodingPlanProfile(options);
+    if (!profile || isAbortError(original, options.abortSignal))
+      return original;
+
+    const response = getHttpErrorResponse(original);
+    const kind = inferCodingPlanErrorKind(original, response, fallbackKind);
+    const code = codingPlanErrorCode(profile, kind);
+    const redactedMessage = redactSensitiveText(
+      original.message,
+      options.apiKey,
+    );
+
+    if (original instanceof APITestError && original.details) {
+      original.details.errorName = code;
+      original.details.errorMessage = redactedMessage;
+      original.details.requestUrl = redactRequestUrl(
+        original.details.requestUrl,
+        options.apiKey,
+      );
+      original.details.requestBody = REDACTED_REQUEST_BODY;
+      original.details.responseBody = redactSensitiveText(
+        original.details.responseBody,
+        options.apiKey,
+      );
+      if (original.details.responseHeaders) {
+        original.details.responseHeaders = redactResponseHeaders(
+          original.details.responseHeaders,
+          options.apiKey,
+        );
+      }
+      original.message = redactedMessage;
+      (original as any).code = code;
+      return original;
+    }
+
+    const normalized = new Error(redactedMessage, { cause: original });
+    (normalized as any).code = code;
+    return normalized;
+  }
+
+  private assertProfileTextInput(options: LLMOptions, isBase64: boolean): void {
+    const profile = this.getCodingPlanProfile(options);
+    if (profile && isBase64 && !profile.supportsPdfBase64) {
+      const error = new Error(getString("endpoint-pdf-unsupported"));
+      (error as any).code = codingPlanErrorCode(profile, "unsupported-input");
+      throw error;
+    }
+  }
+
+  private ensureUrlAndKey(options: LLMOptions) {
+    const profile = this.getCodingPlanProfile(options);
+    const configuredApiUrl = options.apiUrl?.trim() || "";
+    const apiUrl = profile
+      ? configuredApiUrl || profile.defaultApiUrl || ""
+      : this.normalizeChatCompletionsUrl(
+          configuredApiUrl || "https://api.openai.com/v1/chat/completions",
+        );
     const apiKey = (options.apiKey || "").trim();
     if (!apiUrl) throw new Error(providerMissingApiUrl());
     if (!apiKey) throw new Error(providerMissingApiKey());
@@ -101,8 +343,15 @@ export class OpenAICompatProvider implements ILlmProvider {
       params.temperature = options.temperature;
     if (options.topP !== undefined) params.top_p = options.topP;
     if (options.maxTokens !== undefined) params.max_tokens = options.maxTokens;
-    const reasoningEffort = resolveReasoningEffort(options.reasoningEffort);
-    if (reasoningEffort) params.reasoning_effort = reasoningEffort;
+    const profile = this.getCodingPlanProfile(options);
+    const model = this.getModel(options);
+    const supportsReasoning =
+      !profile ||
+      (profile.id === "kimi-code" && /(?:^|[/_-])k3(?:[-_.]|$)/i.test(model));
+    if (supportsReasoning) {
+      const reasoningEffort = resolveReasoningEffort(options.reasoningEffort);
+      if (reasoningEffort) params.reasoning_effort = reasoningEffort;
+    }
     return params;
   }
 
@@ -130,8 +379,10 @@ export class OpenAICompatProvider implements ILlmProvider {
     options: LLMOptions,
     onProgress?: ProgressCb,
   ): Promise<string> {
+    this.assertProfileTextInput(options, isBase64);
     const { apiUrl, apiKey } = this.ensureUrlAndKey(options);
-    const model = (options.model || "gpt-3.5-turbo").trim();
+    const profile = this.getCodingPlanProfile(options);
+    const model = this.getModel(options);
     const streamEnabled = options.stream ?? true;
     throwIfAborted(options.abortSignal);
 
@@ -159,6 +410,7 @@ export class OpenAICompatProvider implements ILlmProvider {
     const basePayload: any = {
       model,
       messages,
+      ...(profile ? { stream: streamEnabled } : {}),
       ...this.buildGenParams(options),
     };
 
@@ -294,7 +546,7 @@ export class OpenAICompatProvider implements ILlmProvider {
           if (isAbortError(abortError, options.abortSignal)) {
             throw normalizeAbortError(abortError, options.abortSignal);
           }
-          throw abortError;
+          throw this.normalizeCodingPlanError(abortError, options);
         }
         if (isAbortError(error, options.abortSignal)) {
           throw normalizeAbortError(error, options.abortSignal);
@@ -317,12 +569,23 @@ export class OpenAICompatProvider implements ILlmProvider {
         } catch {
           /* ignore */
         }
-        throw new Error(errorMessage, { cause: error });
+        throw this.normalizeCodingPlanError(
+          new Error(errorMessage, { cause: error }),
+          options,
+        );
       } finally {
         cleanupAbortSignal?.();
       }
 
-      this.assertStreamCompleted(streamComplete, finishReason, partialLine);
+      try {
+        this.assertStreamCompleted(streamComplete, finishReason, partialLine);
+      } catch (error) {
+        throw this.normalizeCodingPlanError(
+          error,
+          options,
+          "malformed-response",
+        );
+      }
       return chunks.join("");
     }
 
@@ -348,6 +611,15 @@ export class OpenAICompatProvider implements ILlmProvider {
       });
       throwIfAborted(options.abortSignal);
       const data = res.response || res;
+      if (
+        profile &&
+        (!data ||
+          typeof data !== "object" ||
+          !Array.isArray((data as any).choices) ||
+          !(data as any).choices[0])
+      ) {
+        throw new Error(providerStreamParseFailed("OpenAI Compatible"));
+      }
       recordFinishReason(
         options,
         "openai-compat",
@@ -379,7 +651,10 @@ export class OpenAICompatProvider implements ILlmProvider {
       } catch {
         /* ignore */
       }
-      throw new Error(errorMessage, { cause: e });
+      throw this.normalizeCodingPlanError(
+        new Error(errorMessage, { cause: e }),
+        options,
+      );
     } finally {
       cleanupAbortSignal?.();
     }
@@ -392,8 +667,9 @@ export class OpenAICompatProvider implements ILlmProvider {
     options: LLMOptions,
     onProgress?: ProgressCb,
   ): Promise<string> {
+    this.assertProfileTextInput(options, isBase64);
     const { apiUrl, apiKey } = this.ensureUrlAndKey(options);
-    const model = (options.model || "gpt-3.5-turbo").trim();
+    const model = this.getModel(options);
 
     const messages: Array<{
       role: "system" | "user" | "assistant";
@@ -572,7 +848,7 @@ export class OpenAICompatProvider implements ILlmProvider {
         if (isAbortError(abortError, options.abortSignal)) {
           throw normalizeAbortError(abortError, options.abortSignal);
         }
-        throw abortError;
+        throw this.normalizeCodingPlanError(abortError, options);
       }
       if (isAbortError(error, options.abortSignal)) {
         throw normalizeAbortError(error, options.abortSignal);
@@ -595,12 +871,19 @@ export class OpenAICompatProvider implements ILlmProvider {
       } catch {
         /* ignore */
       }
-      throw new Error(errorMessage, { cause: error });
+      throw this.normalizeCodingPlanError(
+        new Error(errorMessage, { cause: error }),
+        options,
+      );
     } finally {
       cleanupAbortSignal?.();
     }
 
-    this.assertStreamCompleted(streamComplete, finishReason, partialLine);
+    try {
+      this.assertStreamCompleted(streamComplete, finishReason, partialLine);
+    } catch (error) {
+      throw this.normalizeCodingPlanError(error, options, "malformed-response");
+    }
     if (options.enablePromptCache) {
       logPromptCacheUsage("OpenAI-Compat chat", lastUsage);
     }
@@ -641,8 +924,10 @@ export class OpenAICompatProvider implements ILlmProvider {
 
   async testConnection(options: LLMOptions): Promise<string> {
     const { apiUrl, apiKey } = this.ensureUrlAndKey(options);
-    const model = (options.model || "gpt-3.5-turbo").trim();
+    const profile = this.getCodingPlanProfile(options);
+    const model = this.getModel(options);
     const testInput = getConnectionTestInput(options);
+    this.assertProfileTextInput(options, testInput.isBase64);
     const userContent = testInput.isBase64
       ? [
           { type: "text", text: testInput.text },
@@ -726,8 +1011,7 @@ export class OpenAICompatProvider implements ILlmProvider {
         /* ignore */
       }
 
-      const { APITestError } = await import("./types");
-      throw new APITestError(errorMessage, {
+      const apiError = new APITestError(errorMessage, {
         errorName,
         errorMessage,
         statusCode: status,
@@ -739,14 +1023,35 @@ export class OpenAICompatProvider implements ILlmProvider {
             ? responseBody
             : JSON.stringify(responseBody),
       });
+      throw this.normalizeCodingPlanError(apiError, options);
     }
 
     const status = response.status;
     const rawResponse = response.response || "";
 
     if (status === 200) {
-      const json =
-        typeof rawResponse === "string" ? JSON.parse(rawResponse) : rawResponse;
+      let json: any;
+      try {
+        json =
+          typeof rawResponse === "string"
+            ? JSON.parse(rawResponse)
+            : rawResponse;
+        if (
+          profile &&
+          (!json ||
+            typeof json !== "object" ||
+            !Array.isArray(json.choices) ||
+            !json.choices[0])
+        ) {
+          throw new Error(providerStreamParseFailed("OpenAI Compatible"));
+        }
+      } catch (error) {
+        throw this.normalizeCodingPlanError(
+          error,
+          options,
+          "malformed-response",
+        );
+      }
       const content = json?.choices?.[0]?.message?.content || "";
       return formatConnectionTestSuccess({
         mode: testInput.mode,
@@ -756,8 +1061,7 @@ export class OpenAICompatProvider implements ILlmProvider {
       });
     }
 
-    const { APITestError } = await import("./types");
-    throw new APITestError(`HTTP ${status}`, {
+    const apiError = new APITestError(`HTTP ${status}`, {
       errorName: `HTTP_${status}`,
       errorMessage: `HTTP ${status}: ${response.statusText || providerRequestFailed("API")}`,
       statusCode: status,
@@ -766,6 +1070,7 @@ export class OpenAICompatProvider implements ILlmProvider {
       responseHeaders,
       responseBody: rawResponse,
     });
+    throw this.normalizeCodingPlanError(apiError, options);
   }
 
   /**
@@ -783,10 +1088,21 @@ export class OpenAICompatProvider implements ILlmProvider {
     onProgress?: ProgressCb,
   ): Promise<string> {
     const { apiUrl, apiKey } = this.ensureUrlAndKey(options);
-    const model = (options.model || "gpt-3.5-turbo").trim();
+    const profile = this.getCodingPlanProfile(options);
+    const model = this.getModel(options);
     throwIfAborted(options.abortSignal);
 
     if (pdfFiles.length === 0) throw new Error(providerNoPdfFiles());
+    if (
+      profile &&
+      pdfFiles.some(
+        (pdfFile) =>
+          typeof pdfFile.base64Content === "string" &&
+          pdfFile.base64Content.trim().length > 0,
+      )
+    ) {
+      this.assertProfileTextInput(options, true);
+    }
 
     // 构建 Chat Completions file 部分（使用 PDF data URI）
     const fileParts: any[] = [];

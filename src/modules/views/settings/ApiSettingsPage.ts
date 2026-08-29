@@ -851,6 +851,22 @@ export class ApiSettingsPage {
     });
     form.appendChild(pdfTitle);
 
+    const codingPlanNote = this.createElement("div", {
+      id: "settings-api-coding-plan-pdf-note",
+      innerHTML: getString("settings-api-coding-plan-pdf-note"),
+      styles: {
+        padding: "10px 12px",
+        backgroundColor: "#f4fbfb",
+        border: "1px solid rgba(89, 192, 188, 0.45)",
+        borderRadius: "6px",
+        color: "#2f6f6c",
+        fontSize: "13px",
+        lineHeight: "1.45",
+        marginBottom: "16px",
+      },
+    });
+    form.appendChild(codingPlanNote);
+
     // PDF 处理模式选择
     const pdfModeValue = (getPref("pdfProcessMode") as string) || "base64";
     const pdfModeSelect = createSelect(
@@ -1997,6 +2013,16 @@ export class ApiSettingsPage {
         apiKeyId: "ollamaApiKey",
         modelId: "ollamaModel",
       },
+      "codex-app-server": {
+        apiUrlId: "",
+        apiKeyId: "",
+        modelId: "codexModel",
+      },
+      "claude-code-cli": {
+        apiUrlId: "",
+        apiKeyId: "",
+        modelId: "claudeModel",
+      },
     };
     const config = configs[keyManagerId];
 
@@ -2115,6 +2141,8 @@ export class ApiSettingsPage {
         openrouter: "openRouterApiKey",
         volcanoark: "volcanoArkApiKey",
         ollama: "ollamaApiKey",
+        "codex-app-server": "",
+        "claude-code-cli": "",
       };
       const prefKey = mapping[providerId];
       if (prefKey) {
@@ -3184,6 +3212,7 @@ export class ApiSettingsPage {
    * 映射提供商ID到KeyManagerId
    */
   private mapToKeyManagerId(provider: string): ProviderId {
+    if (provider === "claude-code-cli") return "claude-code-cli";
     if (provider === "google") return "google";
     if (provider === "anthropic") return "anthropic";
     if (provider === "openrouter") return "openrouter";

@@ -143,8 +143,32 @@ AI管家支持多种主流大模型平台，满足不同用户的需求：
 | **OpenAI 兼容**      | 自定义                   | OpenAI旧接口，使用标准的 Chat Completions 接口格式，支持 SiliconFlow 等第三方服务商 |
 | **火山方舟**         | doubao-seed-1-8-251228   | 🆕 每日200万tokens免费额度，支持豆包大模型系列                                      |
 | **Ollama**           | llama3.2                 | 本地/局域网模型服务，使用文本提取或 MinerU 处理 PDF                                 |
+| **Kimi Code**        | kimi-for-coding          | Coding Plan 的 OpenAI 兼容文本接口，需要 Kimi Code API Key                          |
+| **GLM Coding Plan**  | glm-5.3                  | Coding Plan 的 OpenAI 兼容文本接口，需要 GLM Coding Plan API Key                    |
+| **Claude Code CLI**  | sonnet                   | 本机受限 CLI 登录，不填写 Anthropic API Key；只支持纯文本                           |
 
 ![多平台API配置](./assets/images/多平台API配置.png)
+
+### 本机 Codex App Server（可选）
+
+AI 管家也可以调用同一台 Mac 上、使用您本机登录状态运行的 `codex app-server`，不需要在 Zotero 中填写 API 地址或 API 密钥。先在终端执行 `codex login`，再在 **快捷设置 → 模型平台** 添加 **Codex App Server（本机登录）**。
+
+- **角色默认值**：Sol 使用 `gpt-5.6-sol` + `high` 负责规划与验收；Luna 使用 `gpt-5.6-luna` + `max` 执行受约束的子任务。
+- **二进制路径**：路径留空时由 Zotero 的进程接口自动查找；若查找失败，请填写 Codex 可执行文件的绝对路径。不要只依赖终端 shell 的 `PATH`。
+- **输入边界**：Codex 首版只接收文本/Markdown。Codex endpoint 的 PDF 模式固定为文本并拒绝 Base64；需要 MinerU 时必须由支持该策略的调用方显式生成 Markdown，不能把它当作 PDF 文件上传。
+- **安全默认值**：审批为 `on-request`、沙箱为 `read-only`、网络访问关闭；首版 MCP 通道保留并强制关闭，手工写入 `mcpEnabled: true` 会 fail-closed。
+
+Codex App Server 本地运行不等于本地模型：发送给 Codex 回合的提取文本仍可能按您的 Codex 账号和模型服务策略离开本机。请先阅读[本机 Codex 配置与数据边界说明](docs/codex-app-server.md)；本仓库文档不把本地连接测试或测试套件当作真实 Zotero/Codex demo 通过的证据。
+
+### Coding Plan 供应商（可选）
+
+在 **快捷设置 → 模型平台** 添加以下 profile：
+
+- **Kimi Code**：使用完整 endpoint `https://api.kimi.com/coding/v1/chat/completions`，默认模型 `kimi-for-coding`，API Key 只用于本地 HTTP 请求。
+- **GLM Coding Plan**：使用完整 endpoint `https://open.bigmodel.cn/api/coding/paas/v4`，默认模型 `glm-5.3`，API Key 只用于本地 HTTP 请求。
+- **Claude Code CLI**：使用本机 `claude` 程序和本地登录状态；填写二进制路径（或留空自动查找），权限模式固定为 `plan`，`--restricted` 与 `stream-json` 固定开启。
+
+三类 profile 均只发送 Zotero 提取文本或 MinerU Markdown，不接受 Base64 PDF、原始文件或图片输入，MCP 默认并强制关闭。Coding Plan profile 的协议兼容不等于订阅额度、模型资格或价格承诺；请以供应商当前官方说明和实际连接测试为准。Claude Code Pro/Max 登录不会转换成 API Key，AI Butler 也不会读取或复制 Claude 凭据文件。详细字段、版本限制、故障排查和回滚见 [Coding Plan 供应商指南](docs/coding-plan-providers.md)。
 
 ### 6. 提示词预设管理
 

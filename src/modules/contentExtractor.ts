@@ -5,6 +5,8 @@ import {
 } from "./pdfExtractor";
 import { SnapshotExtractor } from "./snapshotExtractor";
 import type { LLMPdfProcessMode } from "./llmEndpointManager";
+import type { LLMAbortSignal } from "./llmproviders/types";
+import { throwIfAborted } from "./llmproviders/shared/requestAbort";
 
 export type AnalyzableContentKind = "pdf" | "web-snapshot";
 
@@ -24,11 +26,16 @@ export type ResolvedAnalyzableContent = {
 export class ContentExtractor {
   public static async hasAnalyzableAttachment(
     item: Zotero.Item,
+    abortSignal?: LLMAbortSignal,
   ): Promise<boolean> {
+    throwIfAborted(abortSignal);
     if (await PDFExtractor.hasPDFAttachment(item)) {
       return true;
     }
-    return SnapshotExtractor.hasWebSnapshotAttachment(item);
+    throwIfAborted(abortSignal);
+    const hasSnapshot = await SnapshotExtractor.hasWebSnapshotAttachment(item);
+    throwIfAborted(abortSignal);
+    return hasSnapshot;
   }
 
   /**
@@ -76,14 +83,18 @@ export class ContentExtractor {
     preferBase64: boolean,
     pdfProcessMode?: LLMPdfProcessMode,
     progressCallback?: PdfExtractionProgressCallback,
+    abortSignal?: LLMAbortSignal,
   ): Promise<ResolvedAnalyzableContent> {
+    throwIfAborted(abortSignal);
     const pdfAttachments = await PDFExtractor.getAllPdfAttachments(item);
+    throwIfAborted(abortSignal);
     if (pdfAttachments.length > 0) {
       if (preferBase64) {
         return {
           content: await PDFExtractor.extractBase64FromItem(
             item,
             progressCallback,
+            abortSignal,
           ),
           isBase64: true,
           kind: "pdf",
@@ -96,6 +107,7 @@ export class ContentExtractor {
           item,
           pdfProcessMode || "text",
           progressCallback,
+          abortSignal,
         ),
         isBase64: false,
         kind: "pdf",
@@ -105,12 +117,16 @@ export class ContentExtractor {
 
     const snapshot =
       await SnapshotExtractor.getOldestWebSnapshotAttachment(item);
+    throwIfAborted(abortSignal);
     if (!snapshot) {
       throw new Error(getString("content-error-no-analyzable-attachment"));
     }
 
+    const content =
+      await SnapshotExtractor.extractTextFromWebSnapshot(snapshot);
+    throwIfAborted(abortSignal);
     return {
-      content: await SnapshotExtractor.extractTextFromWebSnapshot(snapshot),
+      content,
       isBase64: false,
       kind: "web-snapshot",
       attachment: snapshot,
@@ -121,12 +137,14 @@ export class ContentExtractor {
     item: Zotero.Item,
     pdfProcessMode?: LLMPdfProcessMode,
     progressCallback?: PdfExtractionProgressCallback,
+    abortSignal?: LLMAbortSignal,
   ): Promise<string> {
     const result = await this.extractAnalyzableContentFromItem(
       item,
       false,
       pdfProcessMode,
       progressCallback,
+      abortSignal,
     );
     return result.content;
   }

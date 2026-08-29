@@ -31,7 +31,52 @@ Google Gemini 官方 API 测试连接成功示例：
 
 > ⚠ 若使用第三方中转平台，测试连接成功并不代表大模型 API 可用，需以实际功能为准。
 
-## 3. 开始使用
+### 2.1 配置 Coding Plan 供应商（可选）
+
+在 **模型平台** 中添加对应 profile。Kimi Code 默认使用完整地址
+`https://api.kimi.com/coding/v1/chat/completions` 和模型 `kimi-for-coding`；GLM
+Coding Plan 默认使用完整地址 `https://open.bigmodel.cn/api/coding/paas/v4` 和模型
+`glm-5.3`。两者都需要各自供应商的 API Key，密钥只用于本地 HTTP 请求。
+
+Claude Code CLI 不填写 API 地址或 API Key：请确认本机已安装并登录 `claude`，在
+endpoint 详情中填写可执行文件绝对路径（或留空自动查找）。权限模式固定为 `plan`，
+受限模式和 `stream-json` 固定开启；若当前 CLI 版本不支持所需参数，连接测试会安全失败，
+不会回退到任意命令或 MCP。
+
+三类 profile 都只接受提取文本或 MinerU Markdown。PDF Base64、原始文件、图片和 MCP 均关闭。
+Coding Plan 协议兼容不代表订阅额度或模型资格，详见 [Coding Plan 供应商指南](coding-plan-providers.md)。
+
+## 3. 配置本机 Codex App Server（可选）
+
+Codex App Server endpoint 使用当前操作系统用户的 Codex 登录状态，不在 Zotero 中填写 API 地址或 API 密钥。它适合希望由本机 Codex 负责规划、执行和验收的工作流。
+
+### 3.1 登录 Codex
+
+在与 Zotero 相同的操作系统用户下，在终端执行：
+
+```bash
+codex login
+codex login status
+```
+
+第二条命令应显示当前登录状态。不要把认证文件、token 或完整终端日志复制到问题报告中。
+
+### 3.2 添加 endpoint
+
+1. 打开 **AI 管家仪表盘 → 快捷设置 → 模型平台**。
+2. 添加 **Codex App Server（本机登录）**。
+3. **Codex 二进制路径**可以留空，让 Zotero 的进程接口自动查找 `codex`；如果自动查找失败，填写 Codex 可执行文件的绝对路径。Zotero 启动的进程不会继承您终端中所有的 shell `PATH`，因此绝对路径是可靠的回退方案。
+4. 选择角色并确认模型与推理强度：Sol 为 `gpt-5.6-sol` + `high`，Luna 为 `gpt-5.6-luna` + `max`。除非您明确知道账号和模型服务支持其他组合，否则保留角色默认值。
+5. 默认保持审批 `on-request`、沙箱 `read-only`、网络访问关闭。
+6. 点击 **测试连接**。此按钮会尝试一次 Codex App Server `initialize` 和最小 `Say OK` 回合；看到成功提示只说明本次连接测试成功，不等于已完成真实 Zotero 文献任务。
+
+Codex endpoint 的 PDF 处理方式固定为 **文本**：provider 拒绝 Base64 PDF，且不会把全局 Base64 设置静默转换为可用的文件上传。若调用方明确选择并支持 MinerU，可先生成 Markdown，再以文本发送；当前 Codex endpoint 设置页不提供 MinerU 选项。
+
+首版 **MCP 通道保留但不可用**，设置项锁定为关闭。手工写入 `mcpEnabled: true` 会被运行时拒绝（fail-closed），不会因此连接 Zotero 工具。
+
+关于审批、沙箱、网络和数据驻留的边界，请参阅 [Codex App Server 配置指南](codex-app-server.md)。
+
+## 4. 开始使用
 
 配置完成后，有两种主要使用方式：
 

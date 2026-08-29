@@ -21,7 +21,10 @@ export type ProviderId =
   | "anthropic"
   | "openrouter"
   | "volcanoark"
-  | "ollama";
+  | "ollama"
+  | "codex-app-server"
+  /** Claude Code authenticates through its local CLI session, not API keys. */
+  | "claude-code-cli";
 
 /**
  * 提供商密钥配置映射
@@ -36,7 +39,7 @@ interface ProviderKeyMapping {
 /**
  * 提供商密钥配置映射表
  */
-const PROVIDER_KEY_MAPPINGS: Record<ProviderId, ProviderKeyMapping> = {
+const PROVIDER_KEY_MAPPINGS: Partial<Record<ProviderId, ProviderKeyMapping>> = {
   openai: {
     primaryPrefKey: "openaiApiKey",
     extraKeysPrefKey: "openaiApiKeysFallback",

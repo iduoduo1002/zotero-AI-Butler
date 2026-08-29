@@ -9,9 +9,15 @@ const VALID_REASONING_EFFORTS = new Set<string>([
   "xhigh",
 ]);
 
+export type ReasoningNormalizationOptions = {
+  /** Codex App Server accepts a higher effort than legacy API providers. */
+  allowMax?: boolean;
+};
+
 export function normalizeReasoningEffortSetting(
   value: unknown,
   fallback: LLMReasoningEffortSetting = "default",
+  options: ReasoningNormalizationOptions = {},
 ): LLMReasoningEffortSetting {
   const raw = String(value ?? "")
     .trim()
@@ -20,6 +26,7 @@ export function normalizeReasoningEffortSetting(
   if (raw === "auto" || raw === "inherit" || raw === "default") {
     return "default";
   }
+  if (raw === "max" && options.allowMax) return "max";
   if (VALID_REASONING_EFFORTS.has(raw)) {
     return raw as LLMReasoningEffort;
   }
@@ -28,8 +35,9 @@ export function normalizeReasoningEffortSetting(
 
 export function resolveReasoningEffort(
   value: unknown,
+  options: ReasoningNormalizationOptions = {},
 ): LLMReasoningEffort | undefined {
-  const setting = normalizeReasoningEffortSetting(value, "default");
+  const setting = normalizeReasoningEffortSetting(value, "default", options);
   return setting === "default" ? undefined : setting;
 }
 

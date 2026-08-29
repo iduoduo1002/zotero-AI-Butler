@@ -1,4 +1,9 @@
 import { getString } from "../../utils/locale";
+import type {
+  CodexEventDiagnostic,
+  CodexTurnResult,
+} from "./codexAppServer/types";
+import type { CodingPlanVendor } from "../codingPlanProfiles";
 export type ProgressCb = (chunk: string) => Promise<void> | void;
 
 export type LLMAbortSignal = {
@@ -19,7 +24,7 @@ export type ConversationMessage = {
 };
 
 export type LLMReasoningEffort =
-  "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export type LLMReasoningEffortSetting = "default" | LLMReasoningEffort;
 
@@ -46,6 +51,40 @@ export type LLMOptions = {
   vendorOptions?: Record<string, unknown>;
   abortSignal?: LLMAbortSignal;
   truncation?: LLMTruncationState;
+  /** Stable execution context used by native Codex app-server calls. */
+  executionId?: string;
+  parentExecutionId?: string;
+  role?: "sol" | "luna";
+  codexBinaryPath?: string;
+  approvalPolicy?: string | Record<string, unknown>;
+  sandboxPolicy?: string | Record<string, unknown>;
+  networkAccess?: boolean;
+  mcpEnabled?: boolean;
+  codexThreadId?: string;
+  codexTurnId?: string;
+  codexDiagnostics?: CodexEventDiagnostic[];
+  codexRequestId?: string;
+  codexSourceSha256?: string;
+  /** Optional Coding Plan metadata; absent for legacy endpoints. */
+  codingPlanVendor?: CodingPlanVendor;
+  codingPlanProfile?: string;
+  /** Restricted local Claude Code CLI settings. */
+  claudeBinaryPath?: string;
+  claudePermissionMode?: "plan";
+  claudeRestricted?: boolean;
+  claudeOutputFormat?: "stream-json";
+  /** Structured Sol contract injected into native Codex prompts. */
+  codexContract?: Record<string, unknown>;
+  codexStatus?:
+    | "planned"
+    | "running"
+    | "awaiting_approval"
+    | "passed"
+    | "partial"
+    | "blocked"
+    | "failed";
+  /** Optional metadata handoff without changing the legacy string return API. */
+  onCodexTurnResult?: (result: CodexTurnResult) => void | Promise<void>;
 };
 
 export type LLMProviderParam =
@@ -93,6 +132,26 @@ export type LLMResponse = {
   finishReason?: string;
   warnings?: string[];
   rawExcerpt?: string;
+  /** Optional native Codex execution metadata; absent for HTTP Providers. */
+  executionId?: string;
+  parentExecutionId?: string;
+  role?: "sol" | "luna";
+  threadId?: string;
+  turnId?: string;
+  diagnostics?: CodexEventDiagnostic[];
+  sourceSha256?: string;
+  status?:
+    | "planned"
+    | "running"
+    | "awaiting_approval"
+    | "passed"
+    | "partial"
+    | "blocked"
+    | "failed";
+  approvalPolicy?: string;
+  sandboxPolicy?: string;
+  networkAccess?: boolean;
+  artifactSummary?: string;
 };
 
 export type LLMError = {

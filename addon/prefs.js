@@ -40,6 +40,23 @@ pref("__prefsPrefix__.volcanoArkModel", "doubao-seed-1-8-251228");
 pref("__prefsPrefix__.ollamaApiUrl", "http://localhost:11434");
 pref("__prefsPrefix__.ollamaApiKey", "");
 pref("__prefsPrefix__.ollamaModel", "llama3.2");
+// Native Codex App Server endpoint defaults. Codex uses the local login rather
+// than an API key; the endpoint-specific JSON remains the source of truth.
+pref("__prefsPrefix__.codexRole", "sol");
+pref("__prefsPrefix__.codexBinaryPath", "");
+pref("__prefsPrefix__.codexModel", "gpt-5.6-sol");
+pref("__prefsPrefix__.codexReasoningEffort", "high");
+pref("__prefsPrefix__.codexApprovalPolicy", "on-request");
+pref("__prefsPrefix__.codexSandboxPolicy", "read-only");
+pref("__prefsPrefix__.codexNetworkAccess", false);
+pref("__prefsPrefix__.codexMcpEnabled", false);
+// Claude Code CLI endpoint defaults. Claude authenticates through its local
+// session; API URL and API key preferences are intentionally not defined.
+pref("__prefsPrefix__.claudeModel", "sonnet");
+pref("__prefsPrefix__.claudeBinaryPath", "");
+pref("__prefsPrefix__.claudePermissionMode", "plan");
+pref("__prefsPrefix__.claudeRestricted", true);
+pref("__prefsPrefix__.claudeOutputFormat", "stream-json");
 pref("__prefsPrefix__.llmEndpoints", "[]");
 pref("__prefsPrefix__.llmRoutingStrategy", "priority");
 pref("__prefsPrefix__.llmRoundRobinCursor", "");
