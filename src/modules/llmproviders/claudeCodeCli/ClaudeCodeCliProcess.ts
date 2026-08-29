@@ -302,11 +302,14 @@ export class ClaudeCodeCliProcess implements ClaudeCodeCliProcessLike {
       .then(() => this.raw.wait?.())
       .then(async (result) => {
         this.exitCode = this.extractExitCode(result);
+        await this.waitForStdoutDrain();
         await this.waitForStderrDrain();
         this.closed = true;
         this.notifyExit(this.exitCode);
       })
-      .catch(() => {
+      .catch(async () => {
+        await this.waitForStdoutDrain();
+        await this.waitForStderrDrain();
         this.closed = true;
         this.notifyExit(this.exitCode);
       });
@@ -315,10 +318,16 @@ export class ClaudeCodeCliProcess implements ClaudeCodeCliProcessLike {
   private startReadLoop(): void {
     if (typeof this.raw.stdout?.readString !== "function") return;
     this.readLoopPromise = this.readLoop();
-    void this.readLoopPromise.catch(() => {
-      this.closed = true;
-      this.notifyExit(this.exitCode);
-    });
+    void this.readLoopPromise.then(
+      () => {
+        if (!this.waitPromise) void this.notifyAfterStreams();
+      },
+      () => {
+        // When raw.wait exists it owns exit ordering. Without raw.wait, the
+        // stdout reader is the only process-lifecycle signal available.
+        if (!this.waitPromise) void this.notifyAfterStreams();
+      },
+    );
   }
 
   private startStderrReadLoop(): void {
@@ -393,6 +402,24 @@ export class ClaudeCodeCliProcess implements ClaudeCodeCliProcessLike {
       this.stderrLoopPromise.catch(() => undefined),
       new Promise<void>((resolve) => setTimeout(resolve, STDERR_DRAIN_WAIT_MS)),
     ]);
+  }
+
+  private async waitForStdoutDrain(): Promise<void> {
+    if (!this.readLoopPromise) return;
+    try {
+      await this.readLoopPromise;
+    } catch {
+      // A Zotero InputPipe may reject at EOF; raw.wait remains the exit-code
+      // authority, but all available stdout has still been drained/flushed.
+    }
+  }
+
+  private async notifyAfterStreams(): Promise<void> {
+    if (this.exitNotified) return;
+    await this.waitForStdoutDrain();
+    await this.waitForStderrDrain();
+    this.closed = true;
+    this.notifyExit(this.exitCode);
   }
 
   private async drainStderrAfterKill(): Promise<void> {

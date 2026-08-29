@@ -81,3 +81,19 @@ Could not resolve "../src/modules/llmproviders/claudeCodeCli/ClaudeCodeCliProces
 ## 提交
 
 提交 hash 以最终 handoff 消息为准；未 push、未安装 XPI。
+
+## Fix round — wait-first/stdout-later race
+
+Review 发现的唯一 Important 已关闭：`raw.wait()` 完成时，进程现在先等待 stdout
+read loop 完成（包括最后无换行 partial JSONL flush），再 drain stderr 并触发一次
+`onExit`。stdout reader 异常由 wait loop 统一收口；无 `raw.wait()` 的测试/兼容路径
+仍由 stdout 完成后触发 cleanup，`exitNotified` 保证不会双通知。
+
+新增 fake-process 回归场景：raw wait 先返回 0，stdout 延迟返回无换行的
+`{"type":"result","result":"late"}`。修复前测试在 stdout 释放前观察到 `[0]`
+并失败；修复后先观察到空退出列表，释放 stdout 后收到完整 partial line 和一次
+exit code 0。
+
+Fix round verification：Claude focused **13 passing**；source `tsc --noEmit`、目标
+ESLint/Prettier、`npm run build`（含 i18n/built-locale）均 **PASS**；未运行真实
+Claude credential smoke。

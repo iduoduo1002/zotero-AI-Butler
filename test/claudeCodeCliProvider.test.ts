@@ -423,6 +423,47 @@ describe("restricted Claude Code CLI provider", function () {
     expect(observed.diagnostics).not.to.contain("private");
   });
 
+  it("waits for delayed stdout and flushes a final partial JSONL line before exit", async function () {
+    let releaseStdout!: (value: string) => void;
+    let resolveRawWait!: (value: { exitCode: number }) => void;
+    let stdoutReads = 0;
+    const stdoutReady = new Promise<string>((resolve) => {
+      releaseStdout = resolve;
+    });
+    const rawWait = new Promise<{ exitCode: number }>((resolve) => {
+      resolveRawWait = resolve;
+    });
+    const raw = {
+      stdout: {
+        readString: async () => {
+          if (stdoutReads++ === 0) return stdoutReady;
+          return "";
+        },
+      },
+      wait: async () => rawWait,
+      kill: () => {},
+    };
+    const process = new ClaudeCodeCliProcess(raw);
+    const lines: string[] = [];
+    const exitCodes: Array<number | undefined> = [];
+    process.onLine((line) => lines.push(line));
+    process.onExit((code) => exitCodes.push(code));
+
+    try {
+      resolveRawWait({ exitCode: 0 });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(exitCodes).to.deep.equal([]);
+
+      releaseStdout('{"type":"result","result":"late"}');
+      await process.wait();
+      expect(lines).to.deep.equal(['{"type":"result","result":"late"}']);
+      expect(exitCodes).to.deep.equal([0]);
+    } finally {
+      releaseStdout("");
+      await process.wait();
+    }
+  });
+
   it("kills a task-scoped process on abort and timeout", async function () {
     const abortFake = new FakeClaudeCodeProcess({}, "hold");
     const abortProvider = new ClaudeCodeCliProvider(() => abortFake);
