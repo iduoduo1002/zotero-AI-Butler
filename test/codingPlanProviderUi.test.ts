@@ -3,16 +3,55 @@ import { listCodingPlanProfiles } from "../src/modules/codingPlanProfiles";
 import { endpointProviderOptions } from "../src/modules/views/ui/EndpointSettingsPanel";
 import { LLMNoteMetadataService } from "../src/modules/llmNoteMetadata";
 
-const initialAddon = (globalThis as any).addon;
-const initialLocale = initialAddon?.data?.locale;
+const originalAddon = (globalThis as any).addon;
+let initialAddon: any;
+let initialLocale: any;
+let initialHasLocale = false;
+
+function createLocaleFreeAddon(): any {
+  if (!originalAddon) return { data: {} };
+  const data = { ...(originalAddon.data || {}) };
+  delete data.locale;
+  return { ...originalAddon, data };
+}
+
+function hasLocaleProperty(data: any): boolean {
+  return Boolean(data && Object.prototype.hasOwnProperty.call(data, "locale"));
+}
+
+function restoreLocaleProperty(
+  data: any,
+  hadLocaleProperty: boolean,
+  locale: any,
+): void {
+  if (hadLocaleProperty) data.locale = locale;
+  else delete data.locale;
+}
 
 describe("Coding Plan provider settings UI", function () {
   let previousAddon: any;
   let previousLocale: any;
+  let previousHasLocale = false;
+
+  before(function () {
+    const baselineAddon = createLocaleFreeAddon();
+    baselineAddon.data = baselineAddon.data || {};
+    delete baselineAddon.data.locale;
+    (globalThis as any).addon = baselineAddon;
+    initialAddon = baselineAddon;
+    initialLocale = baselineAddon.data.locale;
+    initialHasLocale = hasLocaleProperty(baselineAddon.data);
+  });
+
+  after(function () {
+    if (originalAddon) (globalThis as any).addon = originalAddon;
+    else delete (globalThis as any).addon;
+  });
 
   beforeEach(function () {
     previousAddon = (globalThis as any).addon;
     previousLocale = previousAddon?.data?.locale;
+    previousHasLocale = hasLocaleProperty(previousAddon?.data);
     const globalAddon = (globalThis as any).addon || { data: {} };
     (globalThis as any).addon = globalAddon;
     globalAddon.data = globalAddon.data || {};
@@ -28,7 +67,11 @@ describe("Coding Plan provider settings UI", function () {
   afterEach(function () {
     if (previousAddon) {
       previousAddon.data = previousAddon.data || {};
-      previousAddon.data.locale = previousLocale;
+      restoreLocaleProperty(
+        previousAddon.data,
+        previousHasLocale,
+        previousLocale,
+      );
       (globalThis as any).addon = previousAddon;
     } else {
       delete (globalThis as any).addon;
@@ -101,8 +144,16 @@ describe("Coding Plan provider settings UI", function () {
   it("captures the restored locale before applying the next temporary setup", function () {
     expect(previousAddon).to.equal(initialAddon);
     expect(previousLocale).to.equal(initialLocale);
+    expect(previousHasLocale).to.equal(initialHasLocale);
+    expect(hasLocaleProperty((globalThis as any).addon?.data)).to.equal(true);
     expect((globalThis as any).addon?.data?.locale).to.not.equal(
       previousLocale,
     );
+  });
+
+  it("deletes a temporary locale when the original data had no locale property", function () {
+    const data = { locale: { current: {} } };
+    restoreLocaleProperty(data, false, undefined);
+    expect(hasLocaleProperty(data)).to.equal(false);
   });
 });
