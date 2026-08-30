@@ -62,6 +62,34 @@ function digestBoundedText(text: string): string {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+const CODEX_ACCEPTANCE_EXCERPT_LIMIT = 12000;
+
+/**
+ * Keep both the beginning and end of a candidate available to Sol.  A plain
+ * prefix slice can hide the required Evidence section on long summaries and
+ * makes a correct candidate look incomplete to the acceptance turn.
+ */
+export function buildCodexAcceptanceExcerpt(
+  text: string,
+  maxLength = CODEX_ACCEPTANCE_EXCERPT_LIMIT,
+): { text: string; truncated: boolean } {
+  if (text.length <= maxLength) return { text, truncated: false };
+  const marker = "\n\n...[candidate excerpt truncated]...\n\n";
+  if (maxLength <= marker.length) {
+    return { text: text.slice(0, maxLength), truncated: true };
+  }
+  const available = maxLength - marker.length;
+  const headLength = Math.ceil(available / 2);
+  const tailLength = available - headLength;
+  return {
+    text:
+      text.slice(0, headLength) +
+      marker +
+      (tailLength > 0 ? text.slice(-tailLength) : ""),
+    truncated: true,
+  };
+}
+
 function logTaskQueue(...args: Parameters<ZToolkit["log"]>): void {
   try {
     if (typeof ztoolkit !== "undefined") {
@@ -198,7 +226,7 @@ function parseCodexSolAcceptanceDetails(
 ): CodexSolAcceptanceDetails {
   const parsed = parseJsonObject(text);
   const acceptance = parseCodexSolAcceptance(text);
-  if (!parsed || acceptance === "BLOCKED") {
+  if (!parsed) {
     return { acceptance: "BLOCKED", criteria: [] };
   }
   const rawCriteria = Array.isArray(parsed.criteria)
@@ -2793,8 +2821,29 @@ export class TaskQueueManager {
       );
     }
     const probe = execution.probe || { exists: false, reason: "not-probed" };
-    const candidateExcerpt = candidate.content.slice(0, 4000);
+    const candidateExcerptResult = buildCodexAcceptanceExcerpt(
+      candidate.content,
+    );
+    const candidateExcerpt = candidateExcerptResult.text;
     const candidateDigest = digestBoundedText(candidate.content);
+    const hasSummarySection =
+      /^\s{0,3}##\s+Summary\s*$/im.test(candidate.content) ||
+      /<h2[^>]*>\s*Summary\s*<\/h2>/i.test(candidate.html);
+    const hasEvidenceSection =
+      /^\s{0,3}##\s+Evidence\s*$/im.test(candidate.content) ||
+      /<h2[^>]*>\s*Evidence\s*<\/h2>/i.test(candidate.html);
+    const runtimeEvidence = {
+      // Summary generation uses an unsaved candidate and defers the final
+      // Zotero write until after this acceptance turn. Deep-read resume flows
+      // retain their own slot migration semantics and are not over-claimed.
+      noZoteroWritesBeforeAcceptance: execution.contract.taskType === "summary",
+      finalNotePersistenceDeferred: true,
+      noteWriteGateActive: true,
+      candidateProbePassed: probe.exists === true && probe.probeFailed !== true,
+      candidateProbeReason: probe.reason || "unknown",
+      candidateHasSummarySection: hasSummarySection,
+      candidateHasEvidenceSection: hasEvidenceSection,
+    };
     const criterionEvidence = execution.contract.acceptanceCriteria.map(
       (criterion) => ({
         criterion,
@@ -2803,6 +2852,7 @@ export class TaskQueueManager {
           candidateNonEmpty: candidate.content.trim().length > 0,
           artifactProbe: probe,
           headingCount: (candidate.html.match(/<h[1-6]\b/gi) || []).length,
+          runtimeEvidence,
         },
       }),
     );
@@ -2810,17 +2860,19 @@ export class TaskQueueManager {
       contract: execution.contract,
       candidate: {
         candidateExcerpt,
+        candidateExcerptTruncated: candidateExcerptResult.truncated,
         candidateDigest,
         characterCount: candidate.content.length,
         htmlCharacterCount: candidate.html.length,
       },
       artifactProbe: probe,
+      runtimeEvidence,
       criterionEvidence,
     });
     const response = await LLMService.generate({
       task: "custom",
       prompt:
-        "You are Sol performing independent acceptance. Return only a JSON object with acceptance exactly PASS, PARTIAL, or BLOCKED and criteria containing one object for every contract acceptance criterion. Each criteria object must contain the exact criterion, verdict exactly PASS/PARTIAL/BLOCKED, and non-empty evidence. Accept PASS only when every criterion and the artifact probe pass. The candidate excerpt is bounded and may be incomplete; do not infer absent evidence.",
+        "You are Sol performing independent acceptance. Return only a JSON object with acceptance exactly PASS, PARTIAL, or BLOCKED and criteria containing one object for every contract acceptance criterion. Each criteria object must contain the exact criterion, verdict exactly PASS/PARTIAL/BLOCKED, and non-empty evidence. Accept PASS only when every criterion and the artifact probe pass. The candidate excerpt is bounded; when truncated it preserves the beginning and end, and candidateExcerptTruncated tells you whether a marker was inserted. Use runtimeEvidence as explicit queue-side evidence for the write boundary and do not infer absent evidence.",
       content: { kind: "text", text: evidence },
       transport: { retry: false, abortSignal },
       metadata: {
@@ -2878,19 +2930,35 @@ export class TaskQueueManager {
     reason: string,
     probe?: CodexArtifactProbeSummary,
     acceptance: CodexQueueAcceptance = "BLOCKED",
+    acceptanceDetails?: CodexSolAcceptanceDetails,
   ): Promise<void> {
     if (!execution) return;
     execution.decision = acceptance;
     const artifactProbe = probe || { exists: false, reason };
     const status = acceptance === "PARTIAL" ? "partial" : "blocked";
+    const criterionCounts = acceptanceDetails
+      ? acceptanceDetails.criteria.reduce(
+          (counts, criterion) => {
+            counts[criterion.verdict] += 1;
+            return counts;
+          },
+          { PASS: 0, PARTIAL: 0, BLOCKED: 0 } as Record<
+            CodexQueueAcceptance,
+            number
+          >,
+        )
+      : undefined;
+    const acceptanceSummary = criterionCounts
+      ? `; criteria PASS=${criterionCounts.PASS}, PARTIAL=${criterionCounts.PARTIAL}, BLOCKED=${criterionCounts.BLOCKED}`
+      : "";
     try {
       await execution.ledger.update(execution.lunaExecutionId, status, {
-        outputSummary: `Luna candidate blocked: ${reason}`,
+        outputSummary: `Luna candidate blocked: ${reason}${acceptanceSummary}`,
         artifactProbe,
         acceptance,
       });
       await execution.ledger.update(execution.solExecutionId, status, {
-        outputSummary: `Sol acceptance BLOCKED: ${reason}`,
+        outputSummary: `Sol acceptance ${acceptance}: ${reason}${acceptanceSummary}`,
         artifactProbe,
         acceptance,
       });
@@ -3180,6 +3248,7 @@ export class TaskQueueManager {
             artifactType,
             item,
             candidate.html,
+            candidate.content,
           );
           codexExecution!.probe = candidateProbe;
           if (!candidateProbe.exists || candidateProbe.probeFailed) {
@@ -3190,7 +3259,17 @@ export class TaskQueueManager {
               candidateProbe.reason || "candidate-probe-failed",
               candidateProbe,
             );
-            return false;
+            const error = new Error(
+              `Codex 候选产物探测失败：${candidateProbe.reason || "candidate-probe-failed"}；未写入 Zotero 笔记`,
+            ) as Error & {
+              code?: string;
+              suppressTaskRetry?: boolean;
+              diagnosticText?: string;
+            };
+            error.code = "codex-candidate-probe-failed";
+            error.suppressTaskRetry = true;
+            error.diagnosticText = `candidateProbe=${candidateProbe.reason || "unknown"}; noteWrite=deferred`;
+            throw error;
           }
           try {
             await codexExecution!.ledger.update(
@@ -3235,8 +3314,29 @@ export class TaskQueueManager {
               `sol-acceptance-${acceptance.acceptance.toLowerCase()}`,
               candidateProbe,
               acceptance.acceptance,
+              acceptance,
             );
-            return false;
+            const criterionCounts = acceptance.criteria.reduce(
+              (counts, criterion) => {
+                counts[criterion.verdict] += 1;
+                return counts;
+              },
+              { PASS: 0, PARTIAL: 0, BLOCKED: 0 } as Record<
+                CodexQueueAcceptance,
+                number
+              >,
+            );
+            const error = new Error(
+              `Codex 验收未通过：${acceptance.acceptance}；criteria PASS=${criterionCounts.PASS}, PARTIAL=${criterionCounts.PARTIAL}, BLOCKED=${criterionCounts.BLOCKED}；未写入 Zotero 笔记`,
+            ) as Error & {
+              code?: string;
+              suppressTaskRetry?: boolean;
+              diagnosticText?: string;
+            };
+            error.code = `codex-sol-acceptance-${acceptance.acceptance.toLowerCase()}`;
+            error.suppressTaskRetry = true;
+            error.diagnosticText = `acceptance=${acceptance.acceptance}; criteriaPass=${criterionCounts.PASS}; criteriaPartial=${criterionCounts.PARTIAL}; criteriaBlocked=${criterionCounts.BLOCKED}; candidateProbe=${candidateProbe.reason || "unknown"}; noteWrite=deferred`;
+            throw error;
           }
           if (candidate.metadata) {
             candidate.metadata.status = "passed";

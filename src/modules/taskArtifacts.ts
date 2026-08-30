@@ -14,6 +14,16 @@ export interface TaskArtifactProbeResult {
   reason?: string;
 }
 
+function hasMarkdownHeading(content: string, title: string): boolean {
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s{0,3}##\\s+${escapedTitle}\\s*$`, "im").test(content);
+}
+
+function hasHtmlHeading(html: string, title: string): boolean {
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`<h2[^>]*>\\s*${escapedTitle}\\s*</h2>`, "i").test(html);
+}
+
 export class TaskArtifacts {
   /**
    * Probe a generated candidate before it is persisted.  The normal `probe`
@@ -24,6 +34,7 @@ export class TaskArtifacts {
     taskType: FixedTaskArtifactType,
     _item: Zotero.Item,
     html: string,
+    content?: string,
   ): Promise<TaskArtifactProbeResult> {
     try {
       if (typeof html !== "string" || !html.replace(/<[^>]*>/g, "").trim()) {
@@ -32,8 +43,19 @@ export class TaskArtifacts {
       if (taskType === "deepRead" && hasIncompleteDeepReadContent(html)) {
         return { exists: false, reason: "deep-read-slots-incomplete" };
       }
-      if (taskType === "summary" || taskType === "deepRead") {
-        return { exists: true, reason: "candidate-ready" };
+      if (taskType === "summary" && typeof content === "string") {
+        const hasSummary =
+          hasMarkdownHeading(content, "Summary") ||
+          hasHtmlHeading(html, "Summary");
+        const hasEvidence =
+          hasMarkdownHeading(content, "Evidence") ||
+          hasHtmlHeading(html, "Evidence");
+        if (!hasSummary || !hasEvidence) {
+          return {
+            exists: false,
+            reason: "candidate-summary-sections-missing",
+          };
+        }
       }
       return { exists: true, reason: "candidate-ready" };
     } catch {

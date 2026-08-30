@@ -121,6 +121,31 @@ describe("Codex task queue gate", function () {
     ]);
   });
 
+  it("fails closed when a summary candidate is missing the required sections", async function () {
+    const item = { id: 1 } as unknown as Zotero.Item;
+    const missingEvidence = await TaskArtifacts.probeCandidate(
+      "summary",
+      item,
+      "<h2>Summary</h2><p>candidate</p>",
+      "## Summary\n\nCandidate claim",
+    );
+    expect(missingEvidence).to.deep.include({
+      exists: false,
+      reason: "candidate-summary-sections-missing",
+    });
+
+    const complete = await TaskArtifacts.probeCandidate(
+      "summary",
+      item,
+      "<h2>Summary</h2><p>candidate</p><h2>Evidence</h2><p>source</p>",
+      "## Summary\n\nCandidate claim\n\n## Evidence\n\n- Source evidence",
+    );
+    expect(complete).to.deep.include({
+      exists: true,
+      reason: "candidate-ready",
+    });
+  });
+
   it("does not mutate a Codex deep-read resume note before Sol acceptance", async function () {
     const globalValue = globalThis as any;
     const previousZotero = globalValue.Zotero;
@@ -1122,9 +1147,16 @@ describe("Codex task queue gate", function () {
         endpoint,
         abortController.signal,
       );
+      const longCandidate =
+        "## Summary\n\n" +
+        "Synthetic bounded summary claim.\n\n".repeat(180) +
+        "## Evidence\n\n- Synthetic evidence supports the summary claim.\n";
       const acceptance = await manager.runCodexSolAcceptance(
         execution,
-        { html: "<h2>candidate</h2><p>ready</p>", content: "ready" },
+        {
+          html: "<h2>Summary</h2><p>ready</p><h2>Evidence</h2><p>evidence</p>",
+          content: longCandidate,
+        },
         abortController.signal,
       );
 
@@ -1146,6 +1178,13 @@ describe("Codex task queue gate", function () {
       expect(calls[1].content.text).to.contain("candidateExcerpt");
       expect(calls[1].content.text).to.contain("criterionEvidence");
       expect(calls[1].content.text).to.contain("candidateDigest");
+      const acceptanceInput = JSON.parse(calls[1].content.text);
+      expect(acceptanceInput.candidate.candidateExcerpt).to.contain(
+        "## Evidence",
+      );
+      expect(
+        acceptanceInput.runtimeEvidence.noZoteroWritesBeforeAcceptance,
+      ).to.equal(true);
       expect(execution.contract.acceptanceCriteria).to.deep.equal([
         "candidate and probe are valid",
       ]);
@@ -1452,6 +1491,10 @@ describe("Codex task queue gate", function () {
         expect(isBase64).to.equal(false);
         roles.push(options.role || "unknown");
         reasoningEfforts.push(String(options.reasoningEffort || ""));
+        if (options.role === "luna") {
+          expect(prompt).to.contain("## Summary");
+          expect(prompt).to.contain("## Evidence");
+        }
         providerCall += 1;
         const text =
           providerCall === 1
@@ -1620,6 +1663,9 @@ describe("Codex task queue gate", function () {
       expect(blockedTask.status).to.equal(TaskStatus.FAILED);
       expect(blockedTask.codexDecision).to.equal("BLOCKED");
       expect(blockedTask.failureCode).to.equal("codex-sol-acceptance-blocked");
+      expect(blockedTask.error).to.contain("Codex 验收未通过");
+      expect(blockedTask.error).not.to.equal("未知错误");
+      expect(blockedTask.errorDetails).to.contain("criteriaPass=1");
       expect(blockedTask.retryCount).to.equal(0);
       expect(saveTxCount).to.equal(0);
       expect(persistedProbeCount).to.equal(0);

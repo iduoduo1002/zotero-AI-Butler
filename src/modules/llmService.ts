@@ -319,6 +319,25 @@ function codexContractPromptSuffix(contract?: Record<string, unknown>): string {
   }
 }
 
+function codexLunaSummaryOutputSuffix(
+  options: Pick<LLMOptions, "role" | "codexContract">,
+): string {
+  if (
+    options.role !== "luna" ||
+    options.codexContract?.taskType !== "summary"
+  ) {
+    return "";
+  }
+  return `
+
+[Codex Luna summary output requirements]
+Return only the bounded Markdown candidate, with exactly these required level-2 sections (in this order):
+## Summary
+## Evidence
+Keep Summary concise (at most three substantive claims). Under Evidence, provide one explicit source-grounded evidence bullet for each claim. Do not include process commentary, JSON, credentials, PDF/Base64 data, absolute paths, or additional top-level sections.
+[End Codex Luna summary output requirements]`;
+}
+
 function injectCodexContractIntoConversation(
   conversation: ConversationMessage[],
   contract?: Record<string, unknown>,
@@ -1335,7 +1354,8 @@ export class LLMService {
     const providerPrompt =
       prompt +
       (endpoint.providerType === "codex-app-server"
-        ? codexContractPromptSuffix(options.codexContract)
+        ? codexContractPromptSuffix(options.codexContract) +
+          codexLunaSummaryOutputSuffix(options)
         : "");
     const warnings: string[] = [];
     request.transport?.onStatus?.({
